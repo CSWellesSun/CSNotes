@@ -10,6 +10,7 @@ Wish to receive more recommendations of excellent **Math** and **CS** courses!
 
 | **Course Name** | **Content** | **Notes**      | **Labs**          |
 |-----------------|-------------|----------------|-------------------|
+| Missing Semester| Terminal    | √              | 0/11              |
 | CS 106L         | C++         | √              | 0/2               |
 | CMU 15-213      | CSAPP       | ×(In Progress) | 2/11(In Progress) |
 
