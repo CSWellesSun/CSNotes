@@ -20,7 +20,20 @@
 
 ## Phase 3
 
+一开始对`sprintf`理解不清，和之前的`sscanf`搞混了。其实就是将字符串放到一个不会被破坏的位置，然后让寄存器`rdi`指向这个字符串的首地址即可。
 
+我一开始将字符串放在了exploit string的开头，但是代码中会修改最初的8个地址，且各种push和call导致exploit string前0x28长度的字节都会被修改，于是最终只能将字符串放在exploit string最后。
+
+## Phase 4
+
+经过前面的铺垫这个phase花的时间非常少，甚至没用gdb一次过了（乐）。主要就是找到`popq rax`和`mov rax, rdi`两条指令即可。
+
+## Phase 5
+
+一直没想出来，发现了`mov rsp, rax`和`pop rax`以及`lea`等操作，但是还是没有构造出来。实际上的思路就是通过`mov rsp, rax`得到随机化栈
+的某个地址，然后使用`pop rax`设置偏移量，用`lea`计算出字符串的首地址。
+
+参考：https://blog.csdn.net/ch_fu/article/details/78915043
 
 
 # 原版README

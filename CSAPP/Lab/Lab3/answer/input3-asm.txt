@@ -1,0 +1,10 @@
+
+input3-asm.o:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000000000 <main>:
+   0:	68 fa 18 40 00       	pushq  $0x4018fa
+   5:	bf 78 dc 61 55       	mov    $0x5561dc78,%edi
+   a:	c3                   	retq   
