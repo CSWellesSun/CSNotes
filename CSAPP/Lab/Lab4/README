@@ -1,0 +1,28 @@
+# 记录
+
+首先需要安装依赖：`sudo apt install tcl tcl-dev tk tk-dev; sudo apt install flex; sudo apt install bison`。
+
+# 原版README
+
+#####################################################################
+# CS:APP Architecture Lab
+# Handout files for students
+#
+# Copyright (c) 2002, 2010, 2015, R. Bryant and D. O'Hallaron,
+# All rights reserved. May not be used, modified, or copied
+# without permission.
+#
+######################################################################
+
+This directory contains the files that you need for the CS:APP
+architecture lab.
+
+******
+Files:
+******
+
+Makefile		Use this to handin your solutions
+README			This file
+archlab.{ps,pdf}	Lab writeup
+sim.tar			Archive of the Y86-64 tools in tar format
+simguide.{ps,pdf}	CS:APP Guide to Simulators document	
