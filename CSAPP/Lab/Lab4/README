@@ -1,6 +1,6 @@
 # 记录
 
-首先需要安装依赖：`sudo apt install tcl tcl-dev tk tk-dev; sudo apt install flex; sudo apt install bison`。
+首先需要安装依赖：`sudo apt install tcl tcl-dev tk tk-dev; sudo apt install flex; sudo apt install bison`。 
 
 # 原版README
 
