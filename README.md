@@ -8,7 +8,7 @@ Wish to receive more recommendations of excellent **Math** and **CS** courses!
 
 ## Current Progress
 
-| **Course Name**  | **Content** | **Notes**      | **Labs **         | ** Homeworks**   |
+| **Course Name**  | **Content** | **Notes**      | **Labs**         | **Homeworks**   |
 |------------------|-------------|----------------|-------------------|------------------|
 | Missing Semester | Terminal    | √              | 0/11              | ×                |
 | CS 106L          | C++         | √              | 0/2               | ×                |
