@@ -29,3 +29,29 @@
 ### Q2b
 
 `scriptSig: 17170, 14831`
+
+## Q3
+
+MultiSig稍微修改。我这里使用的是先验证bank，然后再验证任意一个customer，出现的问题是`scriptSig`的压栈顺序，`bank_sig`应该最后压入，而`cust_sig`先压入，注意还需要补一个`OP_0`/`OP_FALSE`。
+
+## Q4
+
+参考：
+
+- https://en.bitcoin.it/wiki/Contract#Example_5:_Trading_across_chains
+
+- https://en.bitcoin.it/wiki/Atomic_swap
+
+我理解的原理为：
+
+Alice设置一个随机数$X$，然后取$Hash(X)$。设置两个tx，tx1是把钱给Bob（条件为提供$X$和Bob的签名，或者提供Alice和Bob两个人的签名），tx2是把钱给Alice自己（双花）但是locktime为48小时，即48小时之后才能使用，条件是用Alice和Bob两个人的签名。Bob先在Alice的tx2上签好名，于是Alice可以让tx2生效但不能让tx1生效。
+
+Bob也同样设置tx1和tx2（sender和receiver对应改变），但是tx2的locktime为24小时。Alice也在Bob的tx2上签好名，于是Bob也可以让tx2生效，Alice能让Bob的tx1生效。
+
+于是Alice就使用$X$和Alice的签名让Bob的tx1生效，于是Bob知道了$X$，就可以用$X$和Bob的签名让Alice的tx1生效。
+
+出现的问题：
+
+- 该库要求最后stack中必须有一个元素，true/false，所以最后一个OP不需要加VERIFY
+
+- CHECKMULTISIG的时候需要看压入的顺序

@@ -27,7 +27,7 @@ cust3_public_key = cust3_private_key.pub
 # bank_private_key.
 
 Q3a_txout_scriptPubKey = [
-        # fill this in!
+    my_public_key, OP_CHECKSIGVERIFY, 1, cust1_public_key, cust2_public_key, cust3_public_key, 3, OP_CHECKMULTISIGVERIFY
 ]
 ######################################################################
 
