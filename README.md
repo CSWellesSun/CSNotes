@@ -6,7 +6,7 @@ I save my notes and codes of my self-learning courses here.
 
 Wish to receive more recommendations of excellent **Math** and **CS** courses!
 
-## Current Progress
+## Courses
 
 | **Course Name**  | **Content** | **Notes**      | **Labs**         | **Homeworks**   |
 |------------------|-------------|----------------|-------------------|------------------|
@@ -16,6 +16,11 @@ Wish to receive more recommendations of excellent **Math** and **CS** courses!
 | CS 251           | Blockchain  | ×(In Progress) | 1/4(In Progress)  | 0/5(In Progress) |
 | 区块链技术与应用    | Blockchain  | √              | ×                 | ×                |
 
+## Others
+
+| **Name**  | **Content** | **Notes**      | **Labs**         |
+|------------------|-------------|----------------|-------------------|
+| [CryptoZombies](https://cryptozombies.io/) | Blockchain    | ×(In Progress)              | ×              |
 
 ## Thanks
 
