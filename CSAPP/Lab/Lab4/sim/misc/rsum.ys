@@ -1,0 +1,42 @@
+    .pos 0
+    irmovq stack, %rsp
+    call main
+    halt
+
+    .align 8
+ele1:
+    .quad 0x00a
+    .quad ele2
+ele2:
+    .quad 0x0b0
+    .quad ele3
+ele3:
+    .quad 0xc00
+    .quad 0
+
+main:
+    irmovq $0, %rax
+    irmovq ele1, %rdi
+    call rsum_list           # rsum_list(ls)
+    ret
+
+rsum_list:
+    rrmovq %rdi, %r8        # check whether ls == null
+    xorq %r9, %r9
+    subq %r9, %r8
+    je ls_null
+    mrmovq (%rdi), %rax     # val = ls->val
+    pushq %rax
+    mrmovq 8(%rdi), %rdi    # ls = ls->next 
+    call rsum_list          # rsum_list(ls->next)
+    rrmovq %rax, %r8        # %r8 = rest
+    popq %rax
+    addq %r8, %rax
+    jmp done
+ls_null:
+    xorq %rax, %rax
+done:
+    ret
+
+    .pos 0x200
+stack:
