@@ -12,7 +12,7 @@ Wish to receive more recommendations of excellent **Math** and **CS** courses!
 |------------------|-------------|----------------|-------------------|------------------|
 | Missing Semester | Terminal    | √              | 0/11              | ×                |
 | CS 106L          | C++         | √              | 0/2               | ×                |
-| CMU 15-213       | CSAPP       | ×(In Progress) | 3.5/9(In Progress)  | ×                |
+| CMU 15-213       | CSAPP       | ×(In Progress) | 4.5/9(In Progress)  | ×                |
 | CS 251           | Blockchain  | ×(In Progress) | 2/4(In Progress)  | 0/5(In Progress) |
 | 区块链技术与应用    | Blockchain  | √              | ×                 | ×                |
 

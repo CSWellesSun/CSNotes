@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "*.cpp": "cpp",
+        "cachelab.h": "c"
+    }
+}
