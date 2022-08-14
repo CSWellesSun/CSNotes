@@ -430,62 +430,86 @@ malloc申请小内存的时候在低地址，大内存在高地址
       - 修改或添加环境变量`int setenv(const char *name, const char *newvalue, int overwrite)`（`overwrite`非0时发生修改）
       - 删除环境变量`void unsetenv(const char *name)`
     - 维持PID、打开的文件和signal context
-    - `execve`调用1次并且不返回，除非出现错误
+    - `execve`调用1次并且**不返回**，除非出现错误
     - 一般操作是：先`fork`形成子程序，然后在子程序中`execve`
     - <img src="CSAPP.assets/image-20220813193543350.png" alt="image-20220813193543350" style="zoom:67%;" />
 
 ### Signals and Nonlocal Jumps
 
 - Linux Process Hierarchy
-
   - pid=1为init进程，所有进程都是它的子进程
   - init进程下有Daemon守护进程以及login shell，后者为用户提供命令行接口，在命令行中输入指令时就会新建子进程来运行
-
 - Shell Programs
-
   - 如果最后有`&`就会在后台执行
   - 可以设置后台执行完会发送**信号**打断shell，利用Exceptional Control Flow
-
 - 信号
-
-  - 信号是整数（1-30）见书
-
-  - 收到信号
-
-    - ignore
-    - terminate
-    - catch信号然后交给用户级函数signal handler去处理
-
+  - 信号是整数（1-30）
+    - `SIGCHLD`一个子进程暂停或者终止
+  - **发送**信号
+    - 内核检测到系统事件发送给进程
+    - 进程调用kill函数，要求内核发送一个信号给目的进程
+  - **接收**信号
+    - ignore——不属于**接收**
+    - terminate——属于**接收**
+    - catch信号然后交给用户级函数signal handler去处理——属于**接收**
   - 当信号被发送没有收到的时候就是pending，最多一个同类的signal，信号不是排队的，后续相同类型的信号直接discard掉（实际上是用pending bit vector其中一位来表示，当该位为1的时候表示信号发送，为0的时候表示接收到）
-
-  - 信号可以被block，被block的信号可以发送但不会被接收（使用信号掩码，调用`sigprocmask`函数）
-
+  - 信号可以被block，被block的信号可以发送但不会被接收（使用信号掩码，调用`sigprocmask`函数）直到取消block
     - 其他的support函数`sigemptyset/sigfillset/sigaddset/sigdelset`
-
   - 信号有默认action
-
     - terminate
-
     - stop
-
     - ignore
-
-    - 可以用`handler_t *signal(int signum, handler_t *handler)`修改默认操作，
-
-      其中`handler`可以为`SIG_IGN`、`SIG_DFL`（变回默认操作）或者自定义的函数
-
+    - 可以用`handler_t *signal(int signum, handler_t *handler)`修改默认操作（除了`SIGSTOP`和`SIGKILL`），其中`handler`可以为`SIG_IGN`、`SIG_DFL`（变回默认操作）或者自定义的函数（**信号处理程序signal handler**）
 - 进程组
-
   - 每个进程属于一个进程组，子进程继承父进程
-  - `getpgrp()`和`setpgid()`
+  - `pid_t getpgrp(void)`和`pid_t setpgid(pid_t pid, pid_t pgid)`，后者将`pid`的进程组改成`pgid`，如果`pid`为0就用当前进程的PID，如果`pgid`为0就用PID作为组ID
   - 可以同时对一个进程组发送信号`kill -<signal> <pid>`和`kill -<signal> -<gpid>`
+    - `int kill(pid_t pid, int sig)`
   - `ctrl-c`发送`SIGINT`给所有前台进程（结束），`ctrl-z`发送`SIGTSTP`给所有前台进程（暂停）
+  - alarm: `unsigned int alarm(unsigned int secs)`返回前一次闹钟剩余的秒数，若以前没有设定闹钟就为0，到时间会发送`SIGALRM`，如果`secs=0`那就不会调度新的闹钟。注意：对`alarm`调用会取消任何pending的闹钟
 
 - 处理信号
+
   - 当从kernel code转移回到user code的时候会先检查`pnb = pending & ~blocked`
-  - 如果`pnb`非0，就从最小的非0位开始，强制process获得该信号，然后进程处理，之后循环处理所有非0位，然后往下执行下面的代码
+
+  - 如果`pnb`非0，就从最小的非0位开始，强制process接收该信号，然后进程处理，之后循环处理所有非0位，然后往下执行下面的代码
+
+  - **慢速系统调用**，`read/write/accept`等系统调用会阻塞较长时间，因此有些系统（非Linux，如Solaris）设置，当处理系统捕捉到一个信号之后，被中断的慢速系统调用在处理系统返回时**不再继续**（即中断就结束），立即返回错误条件，并将`errno`设置为`EINTR`。简单说，当前进程在等待命令行read的过程中收到signal，那么处理完signal，不再重启慢速系统调用。
+
+  - 信号不可以对其他进程中发生的事件技术，因为会有信号阻塞不排队等问题。另外还有慢速系统调用被中断的情况。
+
+    ```c
+    // 尽可能多的回收zombies
+    void handler(int sig) {
+        pid_t pid;
+        while ((pid = waitpid(-1, NULL, 0)) > 0) { // 注意是while而不是if
+            printf("Handler reaped child %d\n", (int)pid);
+        }
+    }
+    
+    // 重启慢速系统调用
+    int main() {
+        while ((n = read(STDIN_FILENO, buf, sizeof(buf))) < 0)
+            if (errno != EINTR)
+                unix_error("read error");
+    }
+    ```
+
+  - 可移植的信号处理
+
+    - `int sigaction(int signum, struct sigaction *act, struct sigaction *oldact)`用来信号替换，以此解决慢速系统调用，如下
+    - ![image-20220814002905332](CSAPP.assets/image-20220814002905332.png)
+
+  - 显示阻塞信号
+
+    - ![image-20220814003109322](CSAPP.assets/image-20220814003109322.png)
+    - ![image-20220814003124252](CSAPP.assets/image-20220814003124252.png)
 
 - 安全的信号处理程序
+
+  - 参考书本addjob和deletejob的样例
+    - 简单说就是防止子进程先执行完，在父进程中block所有信号，让子进程的信号处于发送状态，当添加完子进程之后再unblock信号来处理处于发送状态的信号
+
   - 尽量简单
   - 函数必须是异步信号安全的（可重入或者不被信号中断，可重入指的是所有变量都在stack中）
     - `printf/sprintf/malloc/exit`不安全
@@ -494,3 +518,130 @@ malloc申请小内存的时候在低地址，大内存在高地址
   - 当访问共享数据的时候需要暂时block所有信号
   - 设置所有的全局变量为`volatile`，防止编译器将值放入寄存器中
   - 设置全局flag为`sig_atomic_t`
+
+- 显示等待子程序结束发送信号的方法
+
+  - 方法一：用全局flag来指示子进程结束
+
+    ```c
+    volatile sig_atomic_t pid; // 全局flag来指示结束子进程的pid
+    
+    void sigchld_handler(int s) {
+        int olderrno = errno;
+        pid = Waitpid(-1, NULL, 0);
+        errno = olderrno;
+    }
+    
+    int main() {
+        ...
+        while (1) {
+            Sigprocmask(SIG_BLOCK, &mask, &prev); // BLOCK SIGCHLD
+            if (Fork() == 0) {
+                // child
+                exit(0);
+            }
+            // parent
+            pid = 0;
+            Sigprocmask(SIG_SETMASK, &prev, NULL); // Unblock SIGCHLD
+            // Wait for SIGCHLD to be received (wasteful!)
+            while (!pid);
+            ...
+        }
+    }
+    ```
+
+  - 方法二：`pause`表示当前进程睡眠，直到获得信号，但是这个信号可能不是`SIGCHLD`，所以要继续循环判断全局flag，存在的问题：如果在判断`pid`之后要进入循环，还没有`pause()`之前，收到了信号，那么`pause`就错过了我们想等的`SIGCHLD`，我们需要在下次获得信号的时候再判断然后退出循环。
+
+    ```c
+    while (!pid) pause(); // race!
+    while (!pid) sleep(1); // too slow!
+    ```
+
+  - 方法三（**正确版本**）：
+
+    - `int sigsuspend(const sigset_t *mask)`
+
+    - 上面的函数相当于下面的原子版本，即原子地处理下一个信号（避免上面的race）
+
+      ```c
+      sigprocmask(SIG_BLOCK, &mask, &prev);
+      pause();
+      sigprocmask(SIG_SETMASK, &prev, NULL);
+      ```
+
+    - 正确的版本
+
+      ```c
+      while (!pid) Sigsuspend(&prev); // prev取消对SIGCHLD的block
+      ```
+
+- 非本地跳转
+
+  - 直接从一个函数转移到另一个当前正在执行的函数，不经过正常的调用返回序列，利用`setjmp`和`longjmp`（加了sig为信号版本）
+
+  - ```c
+    int setjmp(jmp_buf env);
+    int sigsetjmp(sigjmp_buf env, int savesigs);
+    
+    void longjmp(jmp_buf env, int retval);
+    void siglongjmp(sigjmp_buf env, int retval);
+    ```
+
+  - setjmp调用一次保存当前栈的内容以供longjmp使用，返回0；longjmp从env缓冲区中恢复栈内容然后触发一个最近一次初始化env的setjmp调用，并从setjmp位置返回，返回值为retval（相当于setjmp设置信标，然后longjmp之后跳转回来并提供另一个返回值）
+
+  - 目的
+
+    - 在深层嵌套发现错误立即返回普通的本地错误处理程序
+    - 让信号处理程序分支到特殊的代码位置而不是返回信号达到时中断了的位置
+
+  - 注：C++和Java的catch看做是setjmp的类似物，throw为longjmp的类似物
+
+- 操作进程的工具
+  - ![image-20220814004053328](CSAPP.assets/image-20220814004053328.png)
+  - `strace`推荐
+
+## System-Level I/O
+
+- Unix I/O
+  - `open()/close()/read()/write()/lseek()`
+  - 注意Linux/MacOS用`\n`表示换行，而Windows是`\r\n`
+  - `int open(const char *filename, int mode)`，后个参数可以用多个**或**起来，返回值是**file descriptor**，若为-1则表示error
+    - 同时打开的文件是有限制的，可以用`limit`命令查看
+    - 总有三个打开的文件：`stdin/stdout/stderr`，文件描述符分别是0/1/2
+  - `int close(int file_descriptor)`，返回值为负表示error，出现在多线程关闭文件时
+  - `ssize_t read(int file_descriptor, void *buf, int buf_size)`，返回为0表示EOF，负数为error，如果读取数量不足`buf_size`称为**short counts不足值**
+  - `write`类似`read`
+  - 注意系统调用会切换上下文，导致处理效率低
+
+- RIO (robust I/O) package
+  - `rio_readn/rio_writen`，无buffer
+  - `rio_readlineb/rio_readnb`，有缓冲，前者为text后者是binary
+    - 首先将文件读取多一点到buffer中，然后user code先尽量从buffer中读取，避免多次系统调用
+  - 适用于网络编程
+
+- Metadata, sharing, and redirection
+
+  - 使用`stat`函数来查看文件元数据，也有`stat`指令，可以用`man stat`或者`man 2 stat`来看手册（Unix手册往往在第二章有详细解释）
+
+  - 共享文件
+
+    - 三种数据结构
+
+      - 描述符表descriptor table，每个进程有独立的DT，DT表项**索引**为打开的文件描述符，DT表项**内容**是指针指向**文件表**的表项
+      - 文件表file table，**所有**进程共享这张表，每个表项包含**文件位置**（表示当前读到哪，而不是存储位置）、引用计数以及一个指针指向**v-node表**，当计数为0时kernel删除这个表项
+      - v-node表，**所有**进程共享，每个表项包含stat中大部分信息，包括`st_mode`和`st_size`和存储位置等
+
+    - ![image-20220814141056337](CSAPP.assets/image-20220814141056337.png)
+
+    - 允许从文件两个不同的位置（两个不同的文件描述符）开始读起
+
+      ![image-20220814141208205](CSAPP.assets/image-20220814141208205.png)
+
+    - ![image-20220814141253457](CSAPP.assets/image-20220814141253457.png)
+
+  - 重定向
+
+    - 调用`dup2(oldfd, newfd)`函数，在描述符表中拷贝`oldfd`的内容到`newfd`的内容（即修改指向文件表的指针），如果`newfd`已经打开了就先关闭
+
+- Standard I/O
+  - 也有buffer，如`printf
