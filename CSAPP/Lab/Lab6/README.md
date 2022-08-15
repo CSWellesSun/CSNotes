@@ -25,6 +25,12 @@
 
 10. 通过参考手册`man 2 waitpid`可知，实际上`wait`等待的是子进程的状态变化，即终止、暂停和继续，所以需要给`waitpid`再加一个选项`WCONTINUED`才能响应resume的子进程，否则的话会提示`No child process`！
 
+11. `fg`指令实际上有两种情况，其一是子进程处于`bg`状态，此时就是`running`状态，所以`fg`之后不会调用`SIGCHLD`的信号处理；其二是处于`stop`状态，`fg`之后会调用`SIGCHLD`的信号处理。`bg`的话子进程只考虑处于`stop`状态
+
+12. 注意全局变量`fg_pid`和函数`sigsuspend`，用来显式等待前台程序结束(见课)，而注意`SIGCHLD`的信号处理程序中更新`fg_pid`必须是前台程序结束或暂停，因此需要用`!WIFCONTINUED(status)`去除resume的情况。
+
+13. 最后一个点要求接收到其他进程的`SIGTSTP`和`SIGINT`的信号而不是来自终端，需要在`SIGCHLD`中输出进程终止和暂停的消息，注意对于`SIGINT`信号需要先打印然后再`deletejob`(如果打印的时候需要调用如`pid2jid`等函数)
+
 # 原版README
 
 ################

@@ -419,16 +419,18 @@ int builtin_cmd(char **argv)
             if (job == NULL) {
                 printf("(%d): No such process\n", pid);
             } else if (job->state == ST) {
-                Kill(-pid, SIGCONT);
+                job->state = BG;
                 printf("[%d] (%d) %s", job->jid, pid, job->cmdline);
+                Kill(-pid, SIGCONT);
             }
         } else if ((sscanf(argv[1], "%%%d", &jid)) == 1) {
             job = getjobjid(jobs, jid);
             if (job == NULL) {
                 printf("%%%d: No such job\n", jid);
             } else if (job->state == ST) {
-                Kill(-(job->pid), SIGCONT);
+                job->state = BG;
                 printf("[%d] (%d) %s", jid, job->pid, job->cmdline);
+                Kill(-(job->pid), SIGCONT);
             }
         } else {
             printf("bg: argument must be a PID or %%jobid\n");
@@ -437,7 +439,35 @@ int builtin_cmd(char **argv)
         return 1;
     }
     else if (!strcmp(argv[0], "fg")) {
-        
+        pid_t pid;
+        int jid;
+        struct job_t *job = NULL;
+
+        if (argv[1] == NULL) {
+            printf("fg command requires PID or %%jobid argument\n");
+        } else if ((sscanf(argv[1], "%d", &pid)) == 1) {
+            job = getjobpid(jobs, pid);
+            if (job == NULL) {
+                printf("(%d): No such process\n", pid);
+            } else if (job->state == ST || job->state == BG) {
+                job->state = FG;
+                Kill(-pid, SIGCONT);
+                waitfg(pid);
+            }
+        } else if ((sscanf(argv[1], "%%%d", &jid)) == 1) {
+            job = getjobjid(jobs, jid);
+            if (job == NULL) {
+                printf("%%%d: No such job\n", jid);
+            } else if (job->state == ST || job->state == BG) {
+                job->state = FG;
+                Kill(-(job->pid), SIGCONT);
+                waitfg(job->pid);
+            }
+        } else {
+            printf("fg: argument must be a PID or %%jobid\n");
+        }
+
+        return 1;
     }
     else if (!strcmp(argv[0], "&"))
         return 1;
@@ -457,6 +487,14 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
+    sigset_t mask_target, pre_target;
+
+    Sigemptyset(&mask_target);
+    Sigaddset(&mask_target, SIGCHLD);
+    Sigprocmask(SIG_BLOCK, &mask_target, &pre_target);
+    fg_pid = 0;
+    while (!fg_pid) sigsuspend(&pre_target);
+    Sigprocmask(SIG_SETMASK, &pre_target, NULL);
     return;
 }
 
@@ -479,13 +517,16 @@ void sigchld_handler(int sig)
     int olderrno = errno;
     pid = Waitpid(-1, &status, WUNTRACED | WCONTINUED);
     if (pid > 0) {
-        if (pid == fgpid(jobs)) fg_pid = pid;
-        if (WIFEXITED(status) || WIFSIGNALED(status)) {
+        if (!WIFCONTINUED(status) && pid == fgpid(jobs)) fg_pid = pid;
+        if (WIFEXITED(status)) {
             deletejob(jobs, pid);
-        } else if (WIFSTOPPED(status)) {
+        } else if (WIFSIGNALED(status)) {
+            printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, WTERMSIG(status));
+            deletejob(jobs, pid);
+        }
+        else if (WIFSTOPPED(status)) {
             getjobpid(jobs, pid)->state = ST;
-        } else if (WIFCONTINUED(status)) {
-            getjobpid(jobs, pid)->state = BG;
+            printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid, WSTOPSIG(status));
         }
     }
     errno = olderrno;
@@ -507,7 +548,6 @@ void sigint_handler(int sig)
         if (jobs[i].pid != 0 && jobs[i].state == FG) {
             pid = jobs[i].pid;
             Kill(-pid, sig);
-            printf("Job [%d] (%d) terminated by signal %d\n", jobs[i].jid, pid, sig);
             break;
         }
     }
@@ -530,7 +570,6 @@ void sigtstp_handler(int sig)
         if (jobs[i].pid != 0 && jobs[i].state == FG) {
             pid = jobs[i].pid;
             Kill(-pid, sig);
-            printf("Job [%d] (%d) stopped by signal %d\n", jobs[i].jid, pid, sig);
             break;
         }
     }
