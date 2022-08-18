@@ -727,5 +727,15 @@ malloc申请小内存的时候在低地址，大内存在高地址
   - 方法四：blocks sorted by size，利用平衡树
 
 - Implicit Memory Management: Garbage Collection
+
   - 将分配的block看做是graph
-  - 在head中增加mark位
+  - Mark&Sweep
+    - mark：从root的block开始，将已分配但未标记的block设为marked，然后对其中所有指针进行递归调用
+    - sweep：对所有的block扫描一遍，将已分配且标记的取消标记，将已分配但未标记的block都free掉
+    - 如何判断一个值是否是指针：维护一个平衡树
+
+- Memory-related perils and pitfalls
+
+  - 记住表示函数的`()`和表示数组的`[]`的优先级高于`*`
+
+    ![image-20220818235513133](CSAPP.assets/image-20220818235513133.png)
