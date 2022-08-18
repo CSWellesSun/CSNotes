@@ -645,3 +645,87 @@ malloc申请小内存的时候在低地址，大内存在高地址
 
 - Standard I/O
   - 也有buffer，如`printf
+
+## Virtual Memory: Concept
+
+- Address spaces
+  - CPU发送给MMU一个虚拟地址，MMU去内存中找真实的物理地址
+  - 虚拟存储器里分割成虚拟页，虚拟页有三种情况
+    - 未分配
+    - 未缓存
+    - 已缓存
+  - 虚拟页大小为4-8KB，因为miss penalty比较大，采用write back，替换算法更加复杂精密
+  - ![image-20220818124820449](CSAPP.assets/image-20220818124820449.png)
+- VM as a tool for caching
+- VM as a tool for memory management
+  - 方便共享，一份代码load到物理内存之后，虚拟内存可以直接指向它
+  - 在程序loading的时候，`execve`分配虚拟页给`.text`和`.data`，然后创建**有效位为0**的PTE，这样之后访问到的时候会产生缺页异常就load到内存中了（例如你创建了一个很大的数组，只有当实际访问的时候才触发缺页异常load到内存里）
+- VM as a tool for memory protection
+  - 页表上可以加一些许可位（在intel规范里地址高位为0是user模式，为1是内核代码，由此可以作为许可位），如SUP/READ/WRITE/EXEC（EXEC是x86-64的新功能，防止代码插入）等，如果访问没有权限的位置就会触发Segmentation fault
+- Address translation
+  - VPO和PPO是Page Size的log
+  - 多级TLB
+
+## Virtual Memory: System
+
+- Case study: Core i7/Linux memory system
+
+  - ![image-20220818164249794](CSAPP.assets/image-20220818164249794.png)
+
+  - TLB也有层级结构
+
+  - VPO和PPO是相同的，所以可以并行，PPO分成CI和CO，用CI先去找对应的cache
+
+    ![image-20220818171457974](CSAPP.assets/image-20220818171457974.png)
+
+  - 下图存在一些问题：在虚拟内存中，用户的地址高16位都为0，kernel内存地址高16位都是1，所以kernel和用户之间有非常大的空闲空间。注意下图顶部存在一片区域，里面保存着进程的各种数据结构。
+
+    ![image-20220818171722798](CSAPP.assets/image-20220818171722798.png)
+
+  - `pgd`是L1页表的指针，`area_struct`是指向每个**段/区域**的node连起来的链表
+
+    ![image-20220818173811869](CSAPP.assets/image-20220818173811869.png)
+
+  - 缺页错误
+
+    ![image-20220818173906162](CSAPP.assets/image-20220818173906162.png)
+
+- Memory mapping内存映射
+
+  - copy-on-write（COW）：正常时是共享对象，第一次写的时候会复制。`fork`不需要copy实际内存，采用COW
+  - `execve`删除了当前所有的`area_struct`和页表，为新的区域（区域即`.text`等**段**）创建新的`area_struct`和页表
+  - `mmap`函数可以映射
+
+## Dynamic Memory Allocation: Basic Concepts
+
+- `malloc`
+  - 32位是8字节对齐，64位是16字节对齐
+  - 性能目标
+    - 吞吐量：每秒malloc和free的次数
+    - 峰值内存利用率：分配后真实使用的是有效载荷payload，没有使用的是无效载荷，**聚合有效载荷**
+  - 碎片
+    - internal fragmentation: 分配时padding
+    - external fragmentation: 有足够空闲但是没有足够连续空闲
+- Knowing how much to free
+  - 标准做法：在头部多分配一个word，里面保存分配的大小
+- 记录空闲block
+  - 方法一：implicit list隐式链表，将所有block都连在一起
+    - 利用对齐保存信息（比如8byte对齐，最后3bit都应该是0，这三位可以保存信息）
+    - 分配：寻找空闲block改变标志位
+      - first fit
+      - next fit实际上会导致更多碎片
+      - best fit
+    - Free：如果只改变标志位会造成fragmentation，需要考虑是否有连续空闲
+      - boundary tags：对于向前的空闲，使用类似双向链表的方法，在header和footer都保存信息
+      - 优化：已分配的block不需要footer，因为不会被连上，没有footer的block就是已分配的block。由于对齐有三四位空闲，可以用来指示**自己和前一个**block的分配状态
+  - 方法二：explicit list，将所有空闲block都连在一起
+    - 空闲block中保存header, footer, prev和next指针 
+    - Free之后将block插入链表
+      - LIFO (Last-In-First-Out) policy：insert freed block at the beginning of the free list，更容易造成碎片
+      - Address-ordered policy: Insert freed block so that free list are always in address order: addr(prev) < addr(curr) < addr(next)
+  - 方法三：segregated free list
+  - 方法四：blocks sorted by size，利用平衡树
+
+- Implicit Memory Management: Garbage Collection
+  - 将分配的block看做是graph
+  - 在head中增加mark位
