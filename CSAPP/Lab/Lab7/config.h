@@ -22,6 +22,8 @@
  * traces.
  */
 #define DEFAULT_TRACEFILES \
+  "short1-bal.rep",\
+  "short2-bal.rep",\
   "amptjp-bal.rep",\
   "cccp-bal.rep",\
   "cp-decl-bal.rep",\
