@@ -739,3 +739,172 @@ malloc申请小内存的时候在低地址，大内存在高地址
   - 记住表示函数的`()`和表示数组的`[]`的优先级高于`*`
 
     ![image-20220818235513133](CSAPP.assets/image-20220818235513133.png)
+
+## Network Programming
+
+- 协议
+  - 命名方法：统一的主机地址格式
+  - 传送机制：**包**传送，分成包头header和有效载荷payload
+
+- IP地址
+  - 大端字节顺序
+
+- 套接字socket
+  - 套接字地址：地址+端口
+  - 客户端套接字端口是来临时端口，服务器的端口和服务对应
+    - Web服务：80
+    - 电子邮件：25
+    - `/etc/services`包含服务及端口的列表
+  - 连接是由两端套接字地址（**套接字对**）唯一确定的
+  - ![image-20220823211136378](CSAPP.assets/image-20220823211136378.png)
+  - ![image-20220823211356363](CSAPP.assets/image-20220823211356363.png)
+
+-  Web
+
+  - 静态内容：取一个磁盘文件返回给客户端（浏览器就是一个客户端）
+  - 动态内容：运行一个可执行程序并将输出返回给客户端
+  - Web服务器的文件有唯一的标识URL（Universal Resource Locator，通用资源定位符）
+  - 客户端用前缀（域名+端口）来找到服务器及其端口
+
+  - 服务器用后缀来发现文件并决定静态或动态
+    - URL指向静态还是动态没有标准，可以有自己的规则，例如cgi-bin下都放可执行文件
+    - 后缀中最开始的`/`不表示Unix根目录，只是主目录
+    - 最小的URL后缀是`/`，服务器将其扩展成某个默认主页，例如`/index.html`，所以直接输入域名也可以取出网页，因为浏览器自动加上`/`然后服务器再扩展成默认主页
+
+- HTTP
+
+  - Unix可以利用`telnet`来和Web执行事务
+  - HTTP请求
+    - 一个**请求行**：`<method><uri><version>`
+      - method：`GET/POST/OPTIONS/HEAD/PUT/DELETE/TRACE`
+      - URI：URL后缀，包括文件名和可选参数
+      - version表示HTTP版本
+    - 0个或多个**请求报头**：`<header name>:<header data>`
+      - 例如`host: www.aol.com`
+  - HTTP响应
+    - 一个**响应行**：`<version><status code><status message>`
+      - ![image-20220826121055327](CSAPP.assets/image-20220826121055327.png)
+    - 0个或多个**响应报头**
+    - ![image-20220826121141974](CSAPP.assets/image-20220826121141974.png)
+
+- CGI
+
+  - Common Gateway Interface通用网关接口
+  - 服务器fork然后execve程序提供同态内容，这些程序遵循CGI标准称为CGI程序/脚本。调用之前子进程设置CGI的环境变量`QUERY_STRING`
+  - 服务器通过CGI**环境变量**将信息传给子进程
+    - ![image-20220826124855815](CSAPP.assets/image-20220826124855815.png)
+  - 子进程用`getenv`函数获得上述程序参数
+  - CGI程序动态内容输出到stdout，所以子进程要调用`dup2`将stdout重定向到客户端的已连接描述符
+
+## Concurrent Programming
+
+- 基于进程的并发编程
+  - 进程：共享文件表但是不共享地址空间
+  - 优点：一个进程不会覆盖别的基础的地址空间
+  - 缺点：共享困难，慢
+- 基于I/O多路复用的并发编程
+  - 使用select函数要求内核挂起进程，只有当一个或多个I/O事件发生之后才将控制返回给应用程序
+  - 优化：服务器每次循环至多回送一个文本行
+  - 比较复杂，这里略
+- 基于线程的并发编程
+  - 线程有自己的线程上下文：唯一的整数线程ID、栈、栈指针、PC、通用寄存器和条件码，共享进程的整个虚拟地址空间（包括代码、数据、堆、共享库和打开的文件）
+  - 线程上下文切换快
+  - 不是按照父子层次组织，而是同一个进程组成一个对等（线程）池（a pool of peers），主线程和其他线程的区别在于它总是第一个运行的线程。
+  - 对等线程池：一个线程可以杀死任何对等线程，或者等待它的任意对等线程终止
+- Posix Thread
+  - ![image-20220826134116962](CSAPP.assets/image-20220826134116962.png)
+  - 线程例程（thread routine）：`void *thread(void *vargp)`
+    - 如果想传递多个参数就传递一个自定义结构指针，返回多个参数也返回一个结构指针
+
+## Synchronization
+
+- 共享变量
+  - 当且仅当它的一个实例被一个以上的线程引用
+
+- 进度图与安全区
+
+- 信号量
+
+  - 非负整数值的全局变量，只能通过P和V来操作
+  - $P(s)$：如果$s$为非零，那么$s$减一然后立刻返回。如果为0就挂起进程，直到$s$变为非零，该进程由$V$操作重启，重启之后$P$将$s$减一然后控制权返回给调用者
+  - $V(s)$：$V$操作将$s$加一，如果有任何进程在$P$操作等待$s$变成非零，那么$V$操作就会重启这个进程，然后这个进程再用$P$将$s$减一
+  - **信号量不变性**：正确初始化的信号量不会有负值
+  - 基本思想是将共享变量（集合）用一个信号量$s$（初始为1）联系起来，然后用$P(s)$和$V(s)$将临界区包围起来，这种信号量叫做**二进制信号量**（因为只有0和1）两种值
+  - 目的是提供互斥的二进制信号量叫做**互斥锁**，在互斥锁上执行$P$为**加锁**，执行$V$称为**解锁**
+
+- 生产者与消费者模型
+
+  - 生产者线程不断生成内容放到buffer中，消费者从buffer中获得内容（生产者等待buffer中empty slot，消费者等待non-empty slot）
+
+  - 生产者
+
+    ```c++
+    P(&sp->slot); // wait for available slot
+    ...
+    V(&sp->item); // announce available item
+    ```
+
+  - 消费者
+
+    ```c++
+    P(&sp->item); // wait for available item
+    ...
+    V(&sp->slot); // announce available slot
+    ```
+
+- 读写问题
+
+  - 读取可以同时，但更新互斥
+
+  - 优先读
+
+    ```c
+    int readcnt; // initially = 0
+    sem_t mutex, w; // initially = 1
+    
+    void reader(void) {
+        while (1) {
+            P(&mutex); // protect readcnt
+            readcnt++;
+            if (readcnt == 1) // start to read
+                P(&w); // forbid to write
+            V(&mutex);
+            // Do something
+            P(&mutex); // protect readcnt
+            readcnt--;
+            if (readcnt == 0) // stop reading
+                V(&w); // allow to write
+            V(&mutex);
+        }
+    }
+    
+    void writer(void) {
+        while (1) {
+            P(&w);
+            // Do something
+            V(&w);
+        }
+    }
+    ```
+
+  - 优先写
+
+- 预线程化的并发服务器
+
+  - 利用生产者消费者模型，提前产生线程池，然后主线程一旦接受连接，就在buffer中放一个描述符，worker线程就从buffer中获得
+
+- 线程不安全的四种函数
+
+  - 不保护共享变量的函数
+  - 保持跨越多个调用的状态的函数，例如`rand`，每次调用依赖于之前的调用
+  - 返回指向静态指针的函数，例如`ctime`，总是修改同一个位置
+  - 调用线程不安全函数的函数
+
+- 可重入性
+
+  - 可重入性函数：不引用任何共享数据
+  - 可重入是线程安全的子集
+
+- 竞争
+
+- 死锁
