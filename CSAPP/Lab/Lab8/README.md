@@ -1,3 +1,21 @@
+# 记录
+
+首先是理解本实验的目的，即实现一个proxy，将terminal传来的HTTP request进行parse然后变成客户端，连接对应服务器，然后向服务器发送请求，并将结果返回给terminal。因此本体的关键在于parse，需要参考手册实现一个robust的parser。
+
+一开始尝试运行`./driver.sh`发生问题，发现是WSL没有安装`netstat`，使用如下命令安装`sudo apt-get install net-tools`。之后还发现WSL开了代理，通过`echo http_proxy`查看代理，导致`curl`无法运行，使用`unset http_proxy`取消代理即可。
+
+## Part1
+
+理解意思之后，只需要将parse之后的执行换成`serve_as_client`，即proxy变成client去连接对应的服务器，并将服务器的结果发给最初的client。一开始发现能够获得文本文件，如`.html`和`.c`文件，但是`.jpg`文件无法获得，问题在于二进制文件不是以`\0`结束每一行，所以使用`readlineb`和在`writenb`中调用`strlen`都会产生问题。
+
+解决方法：`readnb`会返回读取的字节数，将这个字节数设置成`writenb`的`n`即可。
+
+## Part2
+
+## Part3
+
+# 原版README
+
 ####################################################################
 # CS:APP Proxy Lab
 #
