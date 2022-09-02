@@ -12,7 +12,15 @@
 
 ## Part2
 
+理解书上的生产和消费者模型即可，主线程每次将一个connfd放到线程池中，然后工作线程取其中一个工作即可（即调用`doit`）。
+
 ## Part3
+
+本题中cache的LRU实现我使用的是链表，其中最主要的问题是读写锁的使用。本题一开始犯了一个很蠢的错误，`Cache *cache_init(int size)`没有返回创建的cache。
+
+结果得分62/70，Part1中最后一个下载`tiny`程序发生错误，实际下载发现proxy得到的`tiny`实际上是`home.html`，说明cache有一定问题。最后发现cache中`data`和`uri`没有深拷贝，导致出现问题。
+
+根据writeup，其中还有一些特殊情况，但这里就不再考虑了。
 
 # 原版README
 

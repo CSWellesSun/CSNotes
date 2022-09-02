@@ -8,16 +8,23 @@
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 
 #include "csapp.h"
+#include "sbuf.h"
+#include "cache.h"
 
 void doit(int fd);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *hostname, char *port, char *proxyuri);
-void serve_static(int fd, char *filename, int filesize);
-void get_filetype(char *filename, char *filetype);
-void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum, 
 		 char *shortmsg, char *longmsg);
-void serve_as_client(int fd, char *hostname, char *port, char *proxyuri);
+void serve_as_client(int fd, char *hostname, char *port, char *proxyuri, char *uri);
+
+#define NTHREADS 4
+#define SBUFSIZE 16
+sbuf_t sbuf;
+
+Cache *cache;
+
+void *thread(void *vargp);
 
 int main(int argc, char **argv) 
 {
@@ -25,6 +32,7 @@ int main(int argc, char **argv)
     char hostname[MAXLINE], port[MAXLINE];
     socklen_t clientlen;
     struct sockaddr_storage clientaddr;
+    pthread_t tid;
 
     /* Check command line args */
     if (argc != 2) {
@@ -33,17 +41,31 @@ int main(int argc, char **argv)
     }
 
     listenfd = Open_listenfd(argv[1]);
+    sbuf_init(&sbuf, SBUFSIZE);
+    cache = cache_init(MAX_CACHE_SIZE);
+
+    for (int i = 0; i < NTHREADS; i++)
+        Pthread_create(&tid, NULL, thread, NULL);
+
     while (1) {
 	clientlen = sizeof(clientaddr);
 	connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen); //line:netp:tiny:accept
         Getnameinfo((SA *) &clientaddr, clientlen, hostname, MAXLINE, 
                     port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
-	doit(connfd);                                             //line:netp:tiny:doit
-	Close(connfd);                                            //line:netp:tiny:close
+	sbuf_insert(&sbuf, connfd);
     }
 }
 /* $end tinymain */
+
+void *thread(void *vargp) {
+    Pthread_detach(pthread_self());
+    while (1) {
+        int connfd = sbuf_remove(&sbuf);
+        doit(connfd);                                             //line:netp:tiny:doit
+	    Close(connfd);                                            //line:netp:tiny:close
+    }
+}
 
 /*
  * doit - handle one HTTP request/response transaction
@@ -56,6 +78,7 @@ void doit(int fd)
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
     char hostname[MAXLINE], proxyuri[MAXLINE], port[MAXLINE];
     rio_t rio;
+    Result *res;
 
     /* Read request line and headers */
     Rio_readinitb(&rio, fd);
@@ -69,12 +92,18 @@ void doit(int fd)
         return;
     }                                                    //line:netp:doit:endrequesterr
     read_requesthdrs(&rio);    
+    if ((res = visit_line(cache, uri)) != NULL) {
+        Rio_writen(fd, res->buf, res->size);
+        Free(res->buf);
+        Free(res);
+        return;
+    }
     /* Parse URI from GET request */
     valid = parse_uri(uri, hostname, port, proxyuri);       //line:netp:doit:staticcheck
     if (!valid) {
         printf("parse fail!\n");
     } else {
-        serve_as_client(fd, hostname, port, proxyuri);
+        serve_as_client(fd, hostname, port, proxyuri, uri);
     }
 }
 /* $end doit */
@@ -126,76 +155,6 @@ int parse_uri(char *uri, char *hostname, char *port, char *proxyuri)
 /* $end parse_uri */
 
 /*
- * serve_static - copy a file back to the client 
- */
-/* $begin serve_static */
-void serve_static(int fd, char *filename, int filesize)
-{
-    int srcfd;
-    char *srcp, filetype[MAXLINE], buf[MAXBUF];
-
-    /* Send response headers to client */
-    get_filetype(filename, filetype);    //line:netp:servestatic:getfiletype
-    sprintf(buf, "HTTP/1.0 200 OK\r\n"); //line:netp:servestatic:beginserve
-    Rio_writen(fd, buf, strlen(buf));
-    sprintf(buf, "Server: Tiny Web Server\r\n");
-    Rio_writen(fd, buf, strlen(buf));
-    sprintf(buf, "Content-length: %d\r\n", filesize);
-    Rio_writen(fd, buf, strlen(buf));
-    sprintf(buf, "Content-type: %s\r\n\r\n", filetype);
-    Rio_writen(fd, buf, strlen(buf));    //line:netp:servestatic:endserve
-
-    /* Send response body to client */
-    srcfd = Open(filename, O_RDONLY, 0); //line:netp:servestatic:open
-    srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); //line:netp:servestatic:mmap
-    Close(srcfd);                       //line:netp:servestatic:close
-    Rio_writen(fd, srcp, filesize);     //line:netp:servestatic:write
-    Munmap(srcp, filesize);             //line:netp:servestatic:munmap
-}
-
-/*
- * get_filetype - derive file type from file name
- */
-void get_filetype(char *filename, char *filetype) 
-{
-    if (strstr(filename, ".html"))
-	strcpy(filetype, "text/html");
-    else if (strstr(filename, ".gif"))
-	strcpy(filetype, "image/gif");
-    else if (strstr(filename, ".png"))
-	strcpy(filetype, "image/png");
-    else if (strstr(filename, ".jpg"))
-	strcpy(filetype, "image/jpeg");
-    else
-	strcpy(filetype, "text/plain");
-}  
-/* $end serve_static */
-
-/*
- * serve_dynamic - run a CGI program on behalf of the client
- */
-/* $begin serve_dynamic */
-void serve_dynamic(int fd, char *filename, char *cgiargs) 
-{
-    char buf[MAXLINE], *emptylist[] = { NULL };
-
-    /* Return first part of HTTP response */
-    sprintf(buf, "HTTP/1.0 200 OK\r\n"); 
-    Rio_writen(fd, buf, strlen(buf));
-    sprintf(buf, "Server: Tiny Web Server\r\n");
-    Rio_writen(fd, buf, strlen(buf));
-  
-    if (Fork() == 0) { /* Child */ //line:netp:servedynamic:fork
-	/* Real server would set all CGI vars here */
-	setenv("QUERY_STRING", cgiargs, 1); //line:netp:servedynamic:setenv
-	Dup2(fd, STDOUT_FILENO);         /* Redirect stdout to client */ //line:netp:servedynamic:dup2
-	Execve(filename, emptylist, environ); /* Run CGI program */ //line:netp:servedynamic:execve
-    }
-    Wait(NULL); /* Parent waits for and reaps child */ //line:netp:servedynamic:wait
-}
-/* $end serve_dynamic */
-
-/*
  * clienterror - returns an error message to the client
  */
 /* $begin clienterror */
@@ -224,10 +183,12 @@ void clienterror(int fd, char *cause, char *errnum,
 }
 /* $end clienterror */
 
-void serve_as_client(int fd, char *hostname, char *port, char *proxyuri) {
+void serve_as_client(int fd, char *hostname, char *port, char *proxyuri, char *uri) {
     rio_t rio;
     int clientfd;
     char buf[MAXLINE];
+    char total_data[MAX_OBJECT_SIZE];
+    char *ptr = total_data;
     
     clientfd = Open_clientfd(hostname, port);
     rio_readinitb(&rio, clientfd);
@@ -242,9 +203,20 @@ void serve_as_client(int fd, char *hostname, char *port, char *proxyuri) {
     sprintf(buf, "Proxy-Connection: close\r\n\r\n");
     Rio_writen(clientfd, buf, strlen(buf));
 
+    int total_len = 0;
     ssize_t len;
     while ((len = Rio_readnb(&rio, buf, MAXLINE))) {
+        total_len += len;
+        if (total_len <= MAX_OBJECT_SIZE) {
+            memcpy(ptr, buf, len);
+            ptr += len;
+        }
         Rio_writen(fd, buf, len);
+    }
+    if (total_len <= MAX_OBJECT_SIZE) {
+        while (cache->total_size + total_len > MAX_CACHE_SIZE)
+            remove_line(cache); 
+        add_line(cache, total_data, total_len, uri);
     }
     Close(clientfd);
 }
