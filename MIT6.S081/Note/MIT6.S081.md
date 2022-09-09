@@ -169,3 +169,175 @@ PA中：最低下Reserved，0x100是boot，上电之后首先执行boot然后跳
 ![img](https://906337931-files.gitbook.io/~/files/v0/b/gitbook-legacy-files/o/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MKlssQnZeSx7lgksqSn%2F-MKopGK-JjubGvX84-qy%2Fimage.png?alt=media&token=0084006f-eedf-44ac-b93e-a12c936e0cc0)
 
 user进程的虚拟地址空间分布如上图。
+
+## Lec05 Calling conventions and stack frames RISC-V
+
+### 5.3 gdb和汇编代码执行
+
+`.global <function_name>`表示后者是全局函数，其他文件中也可以调用这个函数
+
+`.asm` 和`.s`的区别在于前者有大量额外的标注，通常编译之后是`.s`文件
+
+gdb中输入`tui enable`可以打开源代码战士窗口
+
+`layout asm`看到所有的汇编指令，`layout reg`看到所有寄存器信息，`layout  source`查看源代码，`layout split`同时查看源代码和汇编
+
+`focus reg/asm`可以设置focus到某个窗口
+
+### 5.5 Stack
+
+![img](MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MM3Hk7Gv6ibvM2lxjCc%2F-MM4D2J3t3ajqkngxRPC%2Fimage.png)
+
+sp指向Stack的底部，fp指向Stack的顶部
+
+查看调用栈`info/i frame`
+
+查看一个数组`p *<addr>@<len>`
+
+watch一个变量：`watch <variable>`，然后用`i locals`可以看到，设置conditional break：`b <position> if <condition>`
+
+## Lec06 Isolation & system call entry/exit
+
+### 6.1 Trap机制
+
+trap流程：
+
+- 保护32个用户寄存器
+- 保护PC
+- mode改成supervisor mode
+- SATP指向kernel page table
+- 堆栈寄存器指向内核的一个地址
+- 跳入内核代码
+
+supervisor mode能做的事情：
+
+- 读写控制寄存器
+- 使用PTE_U标志位0的PTE
+
+注意supervisor不能读写任意物理地址，也需要通过page table来访问内存，如果kernel page table中不包含该VA或者这个地址PTE_U=1那么也不能访问。
+
+### 6.2 Trap代码执行流程
+
+write系统调用的过程：
+
+- write执行ECALL指令切换到内核
+- 内核执行汇编函数`uservec`（`trampoline.s`）
+- 跳转到C语言函数`usertrap`（`trap.c`）
+- 在上面这个函数中执行`syscall`，根据传入的代表系统调用的数字实现对应的syscall，在这里是`sys_write`
+- `sys_write`将数据显示到console上然后结束之后返回`syscall`
+- `syscall`调用`usertrapret`（`trap.c`）完成部分返回给用户空间的工作
+- 执行汇编函数`userret`（`trampoline.s`）调用机器指令返回用户空间，恢复ECALL之后的程序执行
+
+### 6.3 ECALL指令之前的状态
+
+QEMU中有一个方法可以打印当前的page table。从QEMU界面，输入`ctrl a + c`可以进入到QEMU的console，之后输入`info mem`，QEMU会打印完整的page table。
+
+![img](MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-ML5UF6bH4CcXBo4EXjF%2F-MLAcP8ULSwHAM90b_AM%2Fimage.png)
+
+这是个非常小的page table，它只包含了6条映射关系。这是用户程序Shell的page table，而Shell是一个非常小的程序，这6条映射关系是有关Shell的指令和数据，以及一个无效的page用来作为guard page，以防止Shell尝试使用过多的stack page。我们可以看出这个page是无效的，因为在attr这一列它并没有设置u标志位（第三行）。attr这一列是PTE的标志位，第三行的标志位是rwx表明这个page可以读，可以写，也可以执行指令。之后的是u标志位，它表明PTE_u标志位是否被设置，用户代码只能访问u标志位设置了的PTE。再下一个标志位我也不记得是什么了（注，从4.3可以看出，这个标志位是Global）。再下一个标志位是a（Accessed），表明这条PTE是不是被使用过。再下一个标志位d（Dirty）表明这条PTE是不是被写过。
+
+最后两条PTE的虚拟地址非常大，非常接近虚拟地址的顶端，分别是trapframe page和trampoline page。你可以看到，它们都没有设置u标志，所以用户代码不能访问这两条PTE。一旦我们进入到了supervisor mode，我们就可以访问这两条PTE了。
+
+对于这里page table，有一件事情需要注意：它并没有包含任何内核部分的地址映射，这里既没有对于kernel data的映射，也没有对于kernel指令的映射。除了最后两条PTE，这个page table几乎是完全为用户代码执行而创建，所以它对于在内核执行代码并没有直接特殊的作用。
+
+### 6.4 ECALL指令之后的状态
+
+ECALL执行三件事：
+
+- user mode变成supervisor mode
+- 将`PC`保存在`SEPC`中
+- ecall跳转到`STVEC`指向的指令，`PC`设置为`STVEC`，在此即`trampoline page`
+
+ECALL之后来到`trampoline page`（trampoline：**蹦床**），首先执行第一个函数`uservec`，`csrrw a0, sscratch, a0`将`a0`和`sscratch`交换，之后内核可以任意使用`a0`。
+
+page table还没有变，依旧使用user page table，这意味着trap处理代码（`trampoline page`）必须存在于每一个user page table，内核将`trampoline page`映射给了所有user page table。
+
+接下来：
+
+- 我们需要保存32个用户寄存器的内容，这样当我们想要恢复用户代码执行时，我们才能恢复这些寄存器的内容。
+
+- 因为现在我们还在user page table，我们需要切换到kernel page table。
+
+- 我们需要创建或者找到一个kernel stack，并将Stack Pointer寄存器的内容指向那个kernel stack。这样才能给C代码提供栈。
+
+- 我们还需要跳转到内核中C代码的某些合理的位置。
+
+### 6.5 uservec函数
+
+来到`trampoline page`直接执行第一个函数`uservec`，首先需要保护32个寄存器。supervisor mode不能直接访问物理内存，只能用user page table中的非user页（因为此时还没有更改`SATP`，因为我们此时还不知道kernel page table的位置，另外还因为我们还需要同一个空闲寄存器来暂存kernel page table的地址，而我们还没保护好寄存器），XV6给每个user page table中映射了一个非user页`trapframe page`（地址永远为`0x3ffffffe000`来存某些数据，包括32个寄存器）。
+
+> 问题：为何不保存在user的stack里（用户内存），而放在trapframe page（内核内存）里？
+>
+> 答：因为有些编程语言没有栈或者stack pointer不指向任何地址或者栈格式奇怪等。
+
+内核最早进入user space的时候将`trapframe page`地址放在了`sscratch`里，所以`trampoline.S`代码中可以看到将所有寄存器保存到了`trapframe page`里。
+
+<img src="MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MLVt3rA2tFnm8lZdZC5%2F-MLWsVIkkZqnouG03j7c%2Fimage-16627352832414.png" alt="img" style="zoom:50%;" />
+
+> 问题：内核在哪里设置`sscratch`？
+>
+> 答：第一次内核返回user space的时候（一开始就运行在supervisor，然后第一次回到user时），
+>
+> - 执行`trap.c`中的`fn`函数，该函数返回值为`TRAPFRAME`和user page table，而函数第一个返回值放在`a0`里
+> - 执行`trampoline.S`的`userret`函数，将`a0`和`sscratch`交换，此时`sscratch`就是`TRAPFRAME`了
+
+保护完寄存器，接下来：
+
+- 将kernel stack放在sp中
+- 将cpu核编号`hartid`放到tp中
+- 将函数`usertrap`指针写入t0
+- 将kernel page table写入t1（严格来说并不是kernel page table的地址，这是你需要向SATP寄存器写入的数据。它包含了kernel page table的地址，但是移位了），然后交换`SATP`和t1
+  - 此时程序没有崩溃的原因：trampoline page在user page table和kernel page table都有相同的映射关系
+- `jr t0`跳转到t0所在的函数即`usertrap`
+
+### 6.6 usertrap函数
+
+进入usertrap的情况：系统调用，运算时除以0，使用了一个未被映射的虚拟地址，或者是设备中断。
+
+usertrap某种程度上存储并恢复硬件状态，但是它也需要检查触发trap的原因，以确定相应的处理方式。
+
+流程：
+
+- 设置`STVEC`为`kernelvec`，此为内核trap处理代码位置
+- `myproc`函数从当前CPU核上的进程数组中获得当前进程，使用之前的tp寄存器（hartid）
+- 保存user的PC到当前进程的trapframe中（因为接下来可能运行别的进程）
+
+- 根据trap的原因RISC-V的SCAUSE寄存器会保存不同的值，8代表系统调用
+  - 首先检查当前进程是否被其他进程杀掉
+  - 调整sepc，使之+4，之后返回时跳过ecall
+  - `intr_on`打开中断：XV6会在处理系统调用的时候使能中断，这样中断可以更快的服务，有些系统调用需要许多时间处理
+  - 最后调用`syscall`函数（`syscall.c`），通过编号（放在a7中）查找对应syscall服务调用，注意：返回值重新放回trapframe的a0里
+- 再次检查当前进程是否被kill
+- 调用`usertrapret`
+
+### 6.7 usertrapret函数
+
+流程：
+
+- 关闭中断。目的：将要更新`STVEC`来指向用户空间的trap处理代码，如果不关闭的话，出现中断就会跳到user trap process code发生错误
+- 设置STVEC指向trampoline代码。注意`trampoline`最后`sret`会重新打开中断（利用SSTATUS寄存器）
+- 填入trapframe
+  - 存储kernel page table指针
+  - 存储kernel stack
+  - 存储`usertrap`函数地址（6.5中才能写入t0）
+  - 从tp中读取CPU核编号放到trapframe中
+
+- 设置SSTATUS寄存器，清除SPP位（即变为user mode），置中断位（允许中断）
+- 设置sepc为之前保存的user pc值
+- 设置SATP为user的page table
+- `uint64 fn = TRAMPOLINE + (userret - trampoline)`用来计算跳转到汇编代码的位置（`trampoline.S`中`userret`函数的位置）
+- 最后`((void(*)(uint64, uint64))fn)(TRAPFRAME, satp)`，将fn指针作为一个函数指针，执行相应的函数（也就是userret函数）并传入两个参数，两个参数存储在a0，a1寄存器中，即a0存trapframe，a1存satp。
+
+### 6.8 userret函数
+
+程序回到trampoline。流程：
+
+- 切换SATP，`csrw satp, a1`
+- `sfence.vma`，page table切换成user page table
+- `ld t0, 112(a0); csrw sscratch, t0`，将系统调用的返回值放到`sscratch`中
+- 恢复寄存器（除了a0，它还是trapframe的地址）
+- 交换sscratch和a0，此时a0是系统调用返回值，sscratch是trapframe的地址
+- sret
+  - 程序切换成user mode
+  - sepc拷贝到pc
+  - 重新打开中断
