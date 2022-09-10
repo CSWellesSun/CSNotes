@@ -316,6 +316,14 @@ w_tp(uint64 x)
 }
 
 static inline uint64
+r_fp()
+{
+  uint64 x;
+  asm volatile("mv %0, s0" : "=r" (x) );
+  return x;
+}
+
+static inline uint64
 r_ra()
 {
   uint64 x;
