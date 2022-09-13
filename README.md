@@ -15,7 +15,7 @@ Wish to receive more recommendations of excellent **Math** and **CS** courses!
 | CMU 15-213       | CSAPP       | √              | 7.5/8             | ×                |
 | CS 251           | Blockchain  | ×(In Progress) | 2/4(In Progress)  | 0/5(In Progress) |
 | 区块链技术与应用    | Blockchain  | √              | ×                 | ×                |
-| MIT6.S081        | OS          | ×(In Progress) | 4/11(In Progresss)| ×                |
+| MIT6.S081        | OS          | ×(In Progress) | 5/10(In Progresss)| ×                |
 
 ## Others
 

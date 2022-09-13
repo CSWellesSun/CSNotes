@@ -120,6 +120,23 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
+pte_t*
+walkpte(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+
+  if(va >= MAXVA)
+    return 0;
+
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return 0;
+  if((*pte & PTE_V) == 0)
+    return 0;
+  if((*pte & PTE_U) == 0)
+    return 0;
+  return pte;
+}
 // add a mapping to the kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
@@ -303,22 +320,24 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    // both parent's and child's pte should be read-only    
+
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    flags = (flags & (~PTE_W)) | PTE_C; 
+    // map to the parent's pagetable
+    if (mappages(new, i, PGSIZE, pa, flags) != 0) {
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
+    } 
+    *pte &= ~PTE_W;
+    *pte |= PTE_C;
+    incref((void*)pa); 
   }
   return 0;
 
@@ -347,12 +366,33 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    pte = walkpte(pagetable, va0);
+    if (pte == 0) return -1;
+    pa0 = PTE2PA(*pte);
+    if ((*pte & PTE_W) == 0) {
+      if ((*pte & PTE_C) == 0) return -1;
+      if (ref((void*)pa0) == 1) {
+        *pte |= PTE_W;
+        *pte &= ~PTE_C;
+      } else {
+        uint flag = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_C);
+        uint64 ka = (uint64)kalloc();
+        if (ka == 0) {
+          return -1;
+        } else {
+          memmove((void*)ka, (void*)pa0, PGSIZE);
+          *pte = PA2PTE(ka) | flag;
+          kfree((void*)pa0);
+          pa0 = ka;
+        } 
+      }
+      
+    }
+    
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
