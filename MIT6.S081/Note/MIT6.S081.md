@@ -341,3 +341,331 @@ usertrap某种程度上存储并恢复硬件状态，但是它也需要检查触
   - 程序切换成user mode
   - sepc拷贝到pc
   - 重新打开中断
+
+## Lec08 Page faults
+
+### 8.1 Page Fault Basics
+
+出现错误的地址，xv会打印错误的虚拟地址并保存在`STVAL`中。所以当用户触发page fault，会使用trap机制运行切换到内核然后将出错地址放在`STVAL`寄存器中
+
+出错的原因放在`SCAUSE`里，比如，13表示是因为load引起的page fault；15表示是因为store引起的page fault；12表示是因为指令执行引起的page fault。
+
+<img src="MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MMD_TK8Ar4GqWE6xfWV%2F-MMNmVfRDZSAOKze10lZ%2Fimage.png" alt="img" style="zoom: 67%;" />
+
+触发page fault的指令的地址放在`SEPC`，也在`trapframe->epc`中
+
+### 8.2 Lazy page allocation
+
+`sbrk`增加或减少内存，单位是字节数
+
+lazy page allocation：
+
+- 调用增加内存的`sbrk`的时候，只将`p->sz`增加`n`，内核并不分配任何物理内存
+- 在某个时间点需要使用新申请的那部分内存就触发page fault，会分配内存page并重新执行指令（如果page fault的虚拟地址小于当前`p->sz`，同时大于`stack`那么就是未分配内存）
+
+在xv中page fault如果Out Of Memory就会直接杀死进程
+
+`trap.c`的`usertrap`函数进行修改：
+
+```c
+...;
+else if (r_scause() == 15) {
+    uint64 va = r_stval();
+    printf("page fault %p\n", va);
+    uint64 ka = (uint64)kalloc();
+    if (ka == 0) p->killed = 1;
+    else {
+        memset((void*)ka, 0, PGSIZE);
+        va = PGROUNDDOWN(va);
+        if (mappages(p->pagetable, va, PGSIZE, ka, PTE_W|PTE_U|PTE_R) != 0) {
+            kfree((void*)ka);
+            p->killed = 1;
+        }
+    }
+}
+
+...;
+```
+
+`uvmunmap`修改：
+
+```c
+for (a = va; a < va + npages * PGSIZE; a += PGSIZE) {
+    if ((*pte & PTE_V) == 0)
+        continue; // 原来是发生panic
+    ...;
+}
+```
+
+修改的原因是：lazy page allocation里有些内存并没有分配，`unmap`发生page fault，我们实际上应该直接忽略掉
+
+### 8.3 Zero Fill On Demand
+
+BSS区域包含了未被初始化或者初始化为0的全局变量，这里有很多page且内容都是0。
+
+优化方法：将多个全是0的page映射成一个page。这个page是只读的，发生page fault的时候新建一个page重新执行命令
+
+好处：
+
+- lazy allocation节省内存
+- exec需要的工作变少
+
+坏处：
+
+- page fault代价高，因为要转到内核，保存寄存器等工作（远大于store）
+
+### 8.4 Copy On Write Fork
+
+`fork`之后子进程创建一个Shell地址空间的完整拷贝，`exec`会直接丢弃这个空间，所以很浪费
+
+子进程可以直接共享父进程的物理内存page，将这些page设置成只读，当某个进程要写入page的时候就将这个page复制成一个可写的page，父进程对应的page可以变成可读写。
+
+如何检测是copy-on-write readable而不是普通的readable，前者可以用PTE第8个标志位来标示（第8到10位是reserved的RSW位）
+
+需要检测物理页的引用计数，当为0的时候才能释放
+
+### 8.5 Demand Paging
+
+`exec`会将`text/data`以eager加载到page table中，我们也选择lazy模式
+
+需要解决的问题：
+
+- OOM之后的策略
+  - evict撤回、替换，采用LRU策略，优先选择non-dirty替换（不选择dirty的原因，因为OOM之后的写回是暂时的，等一会要再重新恢复到内存里，然后因为dirty又得被写回一次，所以产生了浪费）
+  - PTE的bit7用作dirty bit，bit6用作access bit（LRU策略）
+
+### 8.6 Memory Mapped Files
+
+核心思想：将完整或者部分文件加载到内存中
+
+```c
+mmap(va, len, protection, flags, fd, offset);
+```
+
+上述语义为：从文件描述符对应的文件偏移量的位置开始，映射长度为len的内容到虚拟地址va，同时加上保护如只读或读写
+
+如果内核使用eager方法实现`mmap`，那么当`unmap`的时候需要将dirty block写回到文件中
+
+在lazy模式下，不会立刻将文件内容拷贝到内存中，而是先记录这个PTE属于这个描述符，通常记录在VMA结构体（Virtual Memory Area）
+
+多个进程同时将文件映射到内存，如果没有文件锁定，会产生unknown behavior
+
+## Lec09 Interrupts
+
+### 9.1 真实操作系统内存使用情况
+
+大部分内存都被使用了，并且RES内存（实际使用的物理内存）远小于VIRT内存（使用到的虚拟内存）。
+
+### 9.2 Interrupt硬件部分
+
+- asynchronous，中断处理程序和当前进程没有任何关联
+- concurrency，CPU和产生中断的设备是并发执行的
+- program device，外部设备（如网卡）的编程
+
+主板上不同的设备映射到内核内存某处，读写内存可以向对应设备执行load/store指令
+
+CPU通过PLIC（Platform Level Interrupt Control）来处理中断，将中断路由到某一个CPU核，如果所有CPU核都在处理中断那么就保留中断直到有一个CPU核来处理
+
+流程：
+
+- PLIC通知当前有待处理的中断
+- 其中一个CPU核Claim接受中断
+- CPU处理完中断通知PLIC
+- PLIC不再保留中断信息
+
+### 9.3 设备驱动概述
+
+管理设备的代码叫做驱动，驱动都在内核里
+
+驱动大部分分成两个部分：
+
+- bottom：通常是中断处理程序。存在限制，没有运行在任何进程的context中，进程的page table不知道从哪个地址读写数据，因此不能直接从interrupt handler读写数据
+- top：用户进程或者是内核的其他部分调用接口（对于UART来说是read/write接口，这些接口可以被更高级的代码调用），处理用户进程交互并进行数据读写
+
+### 9.4 在XV6中设置中断
+
+console显示`$`：设备将字符传给UART，UART发送完之后产生中断，在QEMU中模拟线路另一段有另一个UART芯片（模拟）这个芯片连接了虚拟的Console，它进一步显示`$`在Console上。
+
+用户输入`ls`显示在桌面上：键盘连接到了UART的输入线路，按键字符通过串口线发送到另一端的UART芯片，另一端的UART芯片先将数据bit合成byte然后产生中断告诉CPU，CPU通过Interrupt handler来处理这个字符
+
+中断相关的寄存器：
+
+- SIE（Supervisor Interrupt Enable），分别有bit处理 例如UART的外部设备的中断E、软件中断S和定时器中断T
+- SSTATUS，有一个bit来打开和关闭中断，控制所有中断
+- SIP，发生中断时查看得知中断类型
+- SCAUSE，表明原因是中断
+- STVEC，保存发生trap/page fault/中断时CPU的PC
+
+代码：
+
+- `start.c`的`start`函数将所有的中断都设置在Supervisor mode，然后设置SIE寄存器来接收External，软件和定时器中断，之后初始化定时器。
+- `main.c`的`main`函数第一个外设是`console`
+  - `console.c`中的`consoleinit`函数调用`uartinit`
+  - `uart.c`的`uartinit`函数先关闭中断，之后设置波特率（串口线的传输速度），设置字符长度为8bit，重置FIFO，最后再重新打开中断。此时`uart`可以生成中断，但是PLIC还不能接收中断并路由
+- `main`函数调用`plicinit`
+  - PLIC占用I/O地址为`0xC000_0000`，设置`uart`中断使能，这里略
+- `main`调用`plicinithart`，每个CPU核都调用`plicinithart`函数表明对于哪些外设中断感兴趣
+- CPU还没有设置好接收中断，因为还没有设置`scause`寄存器，所以在`main`函数最后调用`scheduler`函数，该函数主要是运行进程，但是在运行之前会执行`intr_on`函数来使得CPU能接受中断
+  - `intr_on`函数只完成一件事就是设置`sstatus`寄存器打开中断标志位
+
+### 9.5 UART驱动的top部分
+
+例如：console显示`$`和一个空格
+
+- `user/init.c`的`main`函数（`init`是系统启动之后的第一个进程）
+
+  - ```c
+    if (open("console", O_RDWR) < 0) {
+        mknod("console", CONSOLE, 0);
+        open("console", O_RDWR);
+    }
+    dup(0); // stdout
+    dup(0); // stderr
+    ```
+
+  - 通过`mknod`操作创建console设备，文件描述符为0（第一个文件），`dup`赋值文件描述符得到另外两个文件描述符1和2，最终都用来表示Console（我们自己的OS来规定这0/1/2对应是stdin/stdout/stderr）
+
+  - ```c
+    for (;;) {
+        pid = fork();
+        if (pid < 0) exit(1);
+        if (pid == 0) {
+            exec("sh", argv);
+            exit(1);
+        }
+        ...; // 父进程会在此等待子进程结束
+    }
+    ```
+
+  - 在每个console中执行`sh`程序
+
+- `user/sh.c`中`getcmd`函数`fprintf(2, "$ ")`，向console这个“文件”输入了后面的字符串
+- 在`printf.c`中实际上系统调用了`write(fd, &c, 1)`
+- 进入`sysfile.c`的`sys_write`函数，调用`kernel/file.c`的`filewrite`函数
+- 在`filewrite`函数中判断文件描述符的类型，`mknod`生成的文件描述符为设备`FD_DEVICE`，我们对特定的设备执行响应的`write`函数，目前是`Console`，于是调用`kernel/console.c`中`consolewrite`函数
+- `consolewrite`函数通过`either_copyin`将字符拷入，然后调用`uartputc`函数，故`consolewrite`就是UART驱动的top部分
+- `uart.c`中的`uartputc`会实际打印字符
+  - 其中维护了一个32bytes的环形队列buffer
+  - 若buffer为满会sleep一段时间，不满则调用`uartstart`函数
+- `uartstart`函数就是通知设备执行操作
+  - 首先判断当前设置是否为空闲，若空闲则从buffer中读出数据然后写入THR（Transmission Holding Rigster）发送寄存器，接下来系统调用返回
+  - 与此同时，UART设备将数据送出，在某个时间点我们会收到UART中断
+
+### 9.6 UART驱动的bottom部分
+
+在我们向Console输出字符时发生中断会产生什么情况（因为`SSTATUS`打开了UART中断）？
+
+我的理解：相当于利用中断来不断循环发送UART sender buffer里的字符
+
+假设键盘生成了一个中断并且发送给PLIC，然后PLIC路由给一个特定的CPU核，如果这个核设置了SIE寄存器的E bit（外部中断），那么发生以下事情：
+
+- 清除SIE寄存器相应的bit，阻止CPU核被其他中断打扰，处理完之后再恢复
+- 设置`SEPC`为当前的`PC`
+- 保存当前的mode，即`user mode`
+- 设置mode为`supervisor mode`
+
+- 将PC设置为`STVEC`（trap处理程序的地址），shell运行在用户空间，所以`STVEC`保存的是`uservec`函数地址，该函数调用`usertrap`
+- 在`trap.c`的`usertrap`函数里处理中断，调用`devintr`函数得到当前的中断类型
+  - `devintr`函数通过`SCAUSE`寄存器判断当前的中断是否来自外部中断，然后调用`plic_claim`函数来获取中断
+  - `plic_cliam`在`plic.c`文件中，这个函数里，返回当前CPU核得到的中断号（从PLIC获得到的）
+  - `devintr`函数判断如果是`UART`中断，那就调用`uartintr`函数
+  - `uart.c`中的`uartintr`函数会先read一下收到的数据（但是目前console并没有收到输入，即没有键盘的输入，所以执行无效），然后运行`uartstart`函数
+  - `uartstart`函数会将存储在buffer中的任意字符发出，此时会把空格再发送过去（write系统调用并发地将空格字符写入buffer中）
+
+### 9.7 Interrupt相关的并发
+
+- 设备与CPU并行运行
+  - producur/consumer并发
+- 中断会停止当前运行的程序：恢复用户空间相对简单，但是内核被中断打断就比较麻烦，如果不能被打断，需要临时关闭中断，来确保代码原子性
+- 驱动的top和bottom是并行运行的：使用lock来共享数据
+
+### 9.8 UART读取键盘输入
+
+在UART另一侧会发生类似的事情，Shell可能会调用read从键盘中读取字符。
+
+- read系统调用的底层会调用`fileread`函数。这个函数里会根据读取文件类型调用相应的read函数，在我们的例子中就是调用`console.c`中的`consoleread`函数
+- `consoleread`也有一个buffer，128bytes，为consumer
+- 若用户键盘输入了字符，这个字符发送到主板的UART芯片，产生中断再被PLIC路由到某个CPU核，之后触发`devintr`函数，该函数发现是一个UART中断，通过`uartgetc`获得字符，然后传递给`consoleintr`函数
+- 默认情况是字符通过`consputc`输出到console上。之后字符放在buffer里，当遇到换行的时候，唤醒之前sleep的进程也就是shell，再从buffer中将数据读出
+
+consumer和producer之间也是互相等待
+
+## Lec10 Multiprocessors and locking
+
+### 10.2 锁如何避免race condition？
+
+`acquire`和`release`之间的指令是critical section
+
+### 10.3 什么时候使用锁？
+
+简单的规则：如果两个进程访问了一个共享的数据结构，并且其中一个进程会更新共享的数据结构
+
+实际上有些情况下不加锁也可以正常工作，称为lock-free program，比较复杂这里不考虑
+
+锁有时需要和操作关联，而不是数据关联（我的理解：转账的过程加锁，而不是先对某一方的账户加锁扣钱解锁，然后对另一方加锁加钱解锁）
+
+### 10.4 锁的特性和死锁
+
+锁的作用：
+
+- 避免丢失更新
+- 打包多个操作使之具有原子性
+- 锁可以维护共享数据结构的不变性
+
+死锁：先acquire一个锁，在critical section里再acquire同一个锁
+
+如果多次acquire一个锁会触发panic
+
+但是如果有两个CPU互相获得对方等待的锁就会产生deadly embrace，死锁就不容易探测了
+
+解决方案：多个锁时需要先排序然后操作需要以相同的顺序获取锁
+
+但是在设计操作系统的时候，如果一个模块m1的方法g要调用另一个模块m2的方法f，那么m2的锁必须要对m1可见来进行排序，导致违背了代码抽象的原则
+
+在XV6中有多种锁的排序，如果不在同一个操作中被acquire就不需要排序
+
+### 10.5 锁与性能
+
+通常的开发流程：
+
+- 先以coarse-graine lock（大锁）开始
+- 再对程序测试看是否能够使用多核
+- 如果不可以就需要重构程序（不必要就不要重构）
+
+### 10.6 XV6中UART模块对于锁的使用
+
+UART采用消费者-生产者模式。锁保护UART的传输缓存；当传输数据时，写指针会指向传输缓存的下一个空闲槽位；而读指针指向的是下一个需要被传输的槽位。
+
+```c
+struct spinlock uart_tx_lock;
+#define UART_TX_BUF_SIZE 32
+char uart_tx_buf[UART_TX_BUF_SIZE];
+int uart_tx_w;
+int uart_tx_r;
+```
+
+`uartputc`函数：首先获得锁，然后检查是否有空槽位，如果有就放到空槽位；写指针加一；调用uartstart；最后释放锁。如果两个进程同时调用`uartputc`能确保两个进程按顺序进入两个空槽
+
+`uartstart`检查缓存不为空就需要处理缓存中的一些字符。锁确保一个时间内只有一个CPU的进程可以写入UART的寄存器THR
+
+因为UART中断（里面有`uartstart`）可能和printf并行执行（各在一个CPU上），所以中断处理程序也需要给`uartstart`加锁
+
+### 10.7 自旋锁（Spin lock）的实现（一）
+
+`acquire`中有个死循环，判断锁对象的locked字段是否为0，如果为0表示没有持有者就可以获取锁，然后设置locked字段为1，返回
+
+但是有问题：两个进程同时读到锁的locked字段为0
+
+常见的解决方法：`amoswap`指令，保证一次test-and-set操作的原子性。这个指令接收3个参数，分别是address，寄存器r1，寄存器r2。这条指令会先锁定住address，将address中的数据保存在一个临时变量中（tmp），之后将r1中的数据写入到地址中，之后再将保存在临时变量中的数据写入到r2中，最后再对于地址解锁。
+
+C语言标准库定义了原子操作，`__sync_lock_test_and_set`。代码是`while (__sync_lock_test_and_set(&lk->locked, 1) != 0)`，逻辑是一直用1和locked的交换并返回locked里原来的数值，只有locked原来是0才能结束循环。
+
+`__sync_lock_release`函数底层也是`awoswap`指令，目的是为了防止同时有进程向locked的字段写入1或0（store指令可能包含两个微指令）
+
+注意：acquire函数一开始会**关闭中断**，如果没有关闭中断有可能中断中又acquire同一把锁（例如`uartputc`里acquire了锁，完成传输之后产生中断又acquire同一把锁）。所以spin lock要处理两类并发，一类是CPU之间的并发，一类是CPU中断和普通程序之间的并发。
+
+注意2：编译器可能会在不改变执行结果的提前下改变指令顺序，导致并发出现问题。为了禁止这种情况，需要使用memory fence或者synchronize指令，对于`_sync_synchronize`指令，任何load/store指令都不能移动到它之后。下面是`release`关于synchronize的注释：
+
+> Tell the C compiler and the CPU to not move loads or stores past this point, to ensure that all the stores in the critical section are visible to other CPUs before the lock is released, and that locks in the critical section occur strictly before the lock is released.
+
+简单说就是`release`设置`locked=0`之前所有critical section的load和store指令都要执行完了。
