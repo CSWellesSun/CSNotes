@@ -650,7 +650,7 @@ int uart_tx_r;
 
 因为UART中断（里面有`uartstart`）可能和printf并行执行（各在一个CPU上），所以中断处理程序也需要给`uartstart`加锁
 
-### 10.7 自旋锁（Spin lock）的实现（一）
+### 10.7 自旋锁（Spin lock）的实现
 
 `acquire`中有个死循环，判断锁对象的locked字段是否为0，如果为0表示没有持有者就可以获取锁，然后设置locked字段为1，返回
 
@@ -669,3 +669,330 @@ C语言标准库定义了原子操作，`__sync_lock_test_and_set`。代码是`w
 > Tell the C compiler and the CPU to not move loads or stores past this point, to ensure that all the stores in the critical section are visible to other CPUs before the lock is released, and that locks in the critical section occur strictly before the lock is released.
 
 简单说就是`release`设置`locked=0`之前所有critical section的load和store指令都要执行完了。
+
+## Lec11 Thread switching
+
+### 11.1 线程（Thread）概述
+
+线程状态包含：
+
+- PC：当前线程执行指令的位置
+- 保存变量的寄存器
+- 程序的Stack，通常每个线程有自己的stack，stack记录了函数调用的记录并反映当前线程的执行点
+
+多线程并行策略：
+
+- 多核各执行一个线程
+- 单核执行多个线程（主要）
+
+XV6中内核代码线程共享地址空间，而用户进程是独立的内存空间
+
+### 11.2 XV6线程调度
+
+定时器中断处理程序，将CPU出让yield给线程调度器
+
+出让有两种pre-emptive scheduling和voluntary scheduling
+
+执行线程调度的时候，操作系统需要区分：
+
+- 当前在CPU上运行的线程
+- 一旦CPU有空闲就想要运行在CPU上的线程
+- 以及不想运行在CPU上的线程，因为这些线程可能在等待I/O或者其他事件
+
+线程状态：
+
+- RUNNING，线程当前正在某个CPU上运行
+- RUNABLE，线程还没有在某个CPU上运行，但是一旦有空闲的CPU就可以运行
+- SLEEPING，这节课我们不会介绍，下节课会重点介绍，这个状态意味着线程在等待一些I/O事件，它只会在I/O事件发生了之后运行
+
+### 11.3 XV6线程切换
+
+在XV6中，任何时候都需要经历：
+
+- 从一个用户进程切换到另一个用户进程，都需要从第一个用户进程接入到内核中，保存用户进程的状态并运行第一个用户进程的内核线程。
+
+- 再从第一个用户进程的内核线程切换到第二个用户进程的内核线程。
+
+- 之后，第二个用户进程的内核线程暂停自己，并恢复第二个用户进程的用户寄存器。
+
+- 最后返回到第二个用户进程继续执行。
+
+具体来说：
+
+- 定时器中断强迫进程切换到内核，内核线程调用`swtch`（注意不是`switch`，因为这个函数已经被用过，`swtch`会保存内核寄存器到context对象，用户寄存器保存在trapframe中）切换**线程调度器**线程，恢复寄存器和sp，然后在线程调度器的context下执行scheduler函数
+- scheduler设置之前的进程为RUNABLE状态，然后根据进程表单找到下一个RUNABLE进程，然后线程调度器调用`swtch`函数切换到另一个进程的内核空间，最后返回user space
+
+每个CPU有一个完全不同的调度器线程，XV6的`start.s`文件，为每个CPU设置好了调度器线程
+
+### 11.5 XV6进程切换示例程序
+
+![img](MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MPlA8TdJmidn6m4MngD%2F-MPnrlXVjhqSv55SaNaq%2Fimage.png)
+
+- 首先是保存了用户空间线程寄存器的trapframe字段
+
+- 其次是保存了内核线程寄存器的context字段
+
+- 还有保存了当前进程的内核栈的kstack字段，这是进程在内核中执行时保存函数调用的位置
+
+- state字段保存了当前进程状态，要么是RUNNING，要么是RUNABLE，要么是SLEEPING等等
+
+- lock字段保护了很多数据，目前来说至少保护了对于state字段的更新。举个例子，因为有锁的保护，两个CPU的调度器线程不会同时拉取同一个RUNABLE进程并运行它
+
+### 11.6 XV6线程切换 --- yield/sched函数
+
+- `usertrap.c`中调用`yield`函数
+
+  - ```c
+    acquire(&p->lock);
+    p->state = RUNABLE;
+    sched();
+    release(&p->lock);
+    ```
+
+  - 加锁是为了让其他线程不会误将设为`RUNABLE`的线程重启运行
+
+- `proc.c`的`sched`函数，进行各种检查，最后调用`swtch(&p->context, &c->context)`（`struct cpu *c = mycpu()`）
+
+### 11.7 XV6线程切换 --- switch函数
+
+- `swtch`函数将内核寄存器保存到`p->context`里，并从`c->context`里恢复当前CPU核调度器线程的寄存器，并继续执行当前CPU核的调度器线程
+  - 查看`c->context.ra`发现是`scheduler`函数，所以之后会返回到`scheduler`函数里
+  - `swtch`保存在`switch.s`文件中
+  - ![img](MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MQ7GitB92kXBjpg1D92%2F-MQCU79U5w93hrTNHvHc%2Fimage.png)
+  - 上面`a0=&p->context,a1=&c->context`
+  - 上面不保存`pc`因为`pc`一直在变，保存`ra`即可
+  - 上面只保存了Callee Saved Register，因为`swtch`是从C代码调用然后跳到汇编里的，前面Caller Saved Register编译器已经帮忙保存好了
+  - 未运行`ld`之前，`sp`指向内核栈地址，运行完下面的`ld`命令时其实已经在线程调度器线程上了，`sp`指向一个非常低的地址（`0x8000a110`），`start.s`在这个区域创建了栈来运行第一个程序，所以调度器线程运行在CPU对应的bootstack上
+
+### 11.8 XV6线程切换 --- scheduler函数
+
+![img](MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MQF83mxAUN2487Ywmqy%2F-MQ_zAO-C8xLZin1Edy_%2Fimage.png)
+
+首先设置`c->proc = 0`，因为刚刚的线程已经终止（进入`RUNABLE`状态），目前CPU正在运行线程调度器线程，所以可以设置`c->proc`为0。此时`yield`函数里面这个进程的锁已经可以release掉了。
+
+注意`swtch`之后将切换到目标线程的调度器线程（`shed`函数，因为之前是在`shed`中调用了`swtch`，context中保存的是此时的寄存器内容），然后回到目标线程的内核线程
+
+### 11.9 XV6线程第一次调用switch函数
+
+第一次调用`swtch`函数的时候，没有context，所以需要伪造一个
+
+在`proc.c`的`allocproc`函数里会设置好新进程的context，如下：
+
+![img](MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MQaze0oj-FmvJMJ-YoM%2F-MQeahAhbIK9Y0WRKLpI%2Fimage.png)
+
+所以`swtch`之后会跳到`forkret`函数里面
+
+![img](MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MQaze0oj-FmvJMJ-YoM%2F-MQeca10yw76tC9PcDd4%2Fimage.png)
+
+这个函数是个假函数，实际上直接释放了锁，然后用`usertrapret`伪装成从trap返回，此时pc为0（下图表示在初始化的时候就设置了pc为0）
+
+![img](MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MQaze0oj-FmvJMJ-YoM%2F-MQedlOtGM8Eilp35HqZ%2Fimage.png)
+
+当第一次创建进程的时候（非fork产生）就要设置pc为0
+
+## Lec13 Sleep & Wake up
+
+### 13.1 线程切换过程中锁的限制
+
+线程切换的顺序：
+
+1. 一个进程出于某种原因想要进入休眠状态，比如说出让CPU或者等待数据，它会先获取自己的锁；
+
+2. 之后进程将自己的状态从RUNNING设置为RUNNABLE；
+
+3. 之后进程调用switch函数，其实是调用sched函数在sched函数中再调用的switch函数；
+
+4. switch函数将当前的线程切换到调度器线程；
+
+5. 调度器线程之前也调用了switch函数，现在恢复执行会从自己的switch函数返回；
+
+6. 返回之后，调度器线程会释放刚刚出让了CPU的进程的锁
+
+另外两个限制条件：
+
+- XV6禁止在调用`swtch`时持有除进程自身锁（`p->lock`）以外的其他锁，否则会发生死锁，因为切换到另一个进程的时候，原先的进程有锁但不在运行
+- 在等待`p->lock`锁释放之前（在`shed`函数中执行完`swtch`之后`release`）`acquire`会关闭中断，为了防止中断处理程序中发生死锁（但是也导致计时器中断被阻止）
+
+### 13.2 Sleep&Wakeup 接口
+
+在`uartwrite`函数里面`WriteReg`之前加一个判断：
+
+```c
+acquire(&uart_tx_lock);
+int i = 0;
+while (i < n) {
+	while(tx_done == 0) {
+    // UART is busy sending a character
+    // wait for it to interrupt
+    sleep(&tx_chan, &uart_tx_lock);
+	}
+    
+    WriteReg(THR, buf[i]);
+    i += 1;
+    tx_done = 0;
+}
+release(&uart_tx_lock);
+```
+
+在`uartintr`函数（传输完一个字符之后触发中断）增加：
+
+```c
+acquire(&uart_tx_lock);
+if (ReadReg(LSR) & LSR_TX_IDLE) {
+    // UART finished transmitting; wake up any sending thread
+    tx_done = 1;
+    wakeup(&tx_chan);
+}
+release(&uart_tx_lock);
+```
+
+中断处理程序读取传输完成的相应的标志位`LSR_TX_IDLE`，如果为1表示传输完成，然后就会设置`tx_done`为1并且调用`wakeup`。
+
+`sleep`和`wakeup`通过sleep channel参数（64bit）连接在一起，相同的数值表明唤醒哪个线程
+
+`sleep`可能会导致`lost wakeup`问题，这里使用一个锁来解决
+
+### 13.3 Lost wakeup
+
+基础的想法（不传入`uart_tx_lock`，会导致`lost wakeup`）：
+
+`sleep(&tx_chan)`将当前进程设置为SLEEPING，然后记录`tx_chan`，然后调用`swtch`
+
+`wakeup(&tx_chan)`检查所有进程，如果为SLEEPING并且进程等于`tx_chan`就设置成RUNABLE
+
+问题：
+
+- `tx_done`标志位是共享数据，没有加锁
+- UART硬件的memory mapped register需要加锁
+
+所以需要在`uartintr`和`uartwrite`函数里面加锁，其中前者比较简单：
+
+```c
+// uartintr
+if (ReadReg(LSR) & LSR_TX_IDLE) {
+    // UART finished transmitting; wake up any sending thread
+    lock();
+    tx_done = 1;
+    wakeup(&tx_chan);
+    unlock();
+}
+```
+
+后者设置比较复杂：
+
+```c
+int tx_done;
+void uartwrite(buf) {
+    for each c in buf:
+    	lock();
+    	while not done:
+    		sleep(&tx_chan);
+    	send c;
+    	tx_done = 0;
+    	unlock();
+}
+```
+
+上述设置方法是不行的，因为sleep的时候还持有着锁，`uartintr`就不能获得锁，就不能设置`tx_done=1`
+
+改成如下：
+
+```c
+int tx_done;
+void uartwrite(buf) {
+    for each c in buf:
+    	lock();
+    	while not done:
+    		unlock();
+    		// RIGHT HERE MAY HAPPEN INTERRUPT!!!
+    		// This process hasn't been set to SLEEPINIG
+    		sleep(&tx_chan);
+    		lock();
+    	send c;
+    	tx_done = 0;
+    	unlock();
+}
+```
+
+先加锁来保护`tx_done`，但是在`sleep`之前要解锁，然后等到`tx_done`为1的时候，再加锁来保护`tx_done`和UART硬件
+
+这里实际上还是有问题，因为上述代码第7行的时候可能发生中断，因为`unlock/release`的时候会打开中断，此时可能让某个CPU核运行`uartintr`，然后在`uartintr`里执行`wakeup`，但是`uartwrite`里面还没有执行`sleep`，该进程还没有设置成SLEEPING，这就导致了`wakeup`没有唤醒任何一个进程，即`lost wakeup`
+
+为什么要用`while not done`而不是`if not done`或者去掉，因为可能同时有多个在sleep然后有一个wakeup的时候只有一个能得到wakeup机会，其他还需要继续sleep
+
+### 13.4 如何避免Lost wakeup
+
+![img](MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MRDtbr2ScpNJk7lg7cC%2F-MREMzp89sA7KpGFvpRR%2Fimage.png)
+
+<img src="MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MRDtbr2ScpNJk7lg7cC%2F-MRES-_F9acYZnkLZxRq%2Fimage-16637299278144.png" alt="img" style="zoom:67%;" />
+
+<img src="MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MRDtbr2ScpNJk7lg7cC%2F-MREOF_8qjRnwcWlpTMo%2Fimage.png" alt="img" style="zoom:50%;" />
+
+在sleep中先获得进程的锁，然后释放`uart_tx_lock`（conditional lock）但是此时`wakeup`还是不能查看进程的状态，因为进程的锁被`sleep`持有，一直等到执行`shed`，`shed`里面（11.8）调度器线程会释放进程锁，然后`wakup`得到锁，发现该进程是SLEEPING然后唤醒它
+
+注意：sleep最后会释放掉进程的锁，然后重新acquire conditional lock，就像13.3伪代码中写的那样。
+
+### 13.6 exit系统调用
+
+exit工作：释放进程的内存和page table，关闭已经打开的文件，父进程通过wait系统调用唤醒
+
+<img src="https://906337931-files.gitbook.io/~/files/v0/b/gitbook-legacy-files/o/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MRI1sMS2HP1mhGMGIiv%2F-MRI3uKY4B8Zlh7M6ggX%2Fimage.png?alt=media&token=9827c564-2dcc-4698-8ab7-d4a9dd80cb2d" alt="img" style="zoom:50%;" />
+
+进程有个对于当前目录的记录，这个记录会随着你执行cd指令而改变，所以exit过程中也需要对这个目录的引用释放给文件系统（大概是`begin_op()`开始那段，不太确定）
+
+<img src="MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MRI5h4hB8wRa7-ACHWb%2F-MRKilcQcZImk40Xo4YN%2Fimage-16637367129628.png" alt="img" style="zoom: 67%;" />
+
+当一个进程要退出，它有自己的子进程，就会设置这些子进程的父进程为init进程（即PID为1的进程）
+
+之后调用`wakeup`唤醒父进程，当前进程的父进程或许正在等待当前进程退出，父进程的`wait`会做进程资源释放的最后几个步骤（**关于这里的顺序参考下一小节最后一个问题**）
+
+进程的状态被设置为ZOMBIE。现在进程还没有完全释放它的资源，所以它还不能被重用。所谓的进程重用是指，我们期望在最后，进程的所有状态都可以被一些其他无关的fork系统调用复用，但是目前我们还没有到那一步
+
+我们在还没有完全释放所有资源的时候，通过调用sched函数进入到调度器线程
+
+到目前位置，进程的状态是ZOMBIE，并且进程不会再运行，因为调度器只会运行RUNNABLE进程。同时进程资源也并没有完全释放，如果释放了进程的状态应该是UNUSED。但是可以肯定的是进程不会再运行了，因为它的状态是ZOMBIE。所以调度器线程会决定运行其他的进程。
+
+### 13.7 wait系统调用
+
+<img src="MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MRI5h4hB8wRa7-ACHWb%2F-MRKl81UupGc0tC9itiU%2Fimage.png" alt="img" style="zoom:50%;" />
+
+先找个当前进程的ZOMBIE子进程，然后调用`freeproc`
+
+<img src="https://906337931-files.gitbook.io/~/files/v0/b/gitbook-legacy-files/o/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MRI5h4hB8wRa7-ACHWb%2F-MRKmp_gJwp8P-t_RQp0%2Fimage.png?alt=media&token=fa0ba0f4-1c39-46df-a88c-0c54784ce4ba" alt="img" style="zoom:67%;" />
+
+这里可以释放进程的内核栈`kstack`，但是由于guard page存在，就没有必要再释放一次内核栈（有疑问）
+
+init进程的工作就是在一个循环中一直调用`wait`来`freeproc`所有的进程
+
+当父进程彻底释放完子进程资源之后就可以设置state为UNUSED，之后fork系统调用就可以重用进程所在进程表中的位置
+
+> 为什么在exit中先wakeup父进程的wait释放其他子进程的资源，而不是设置当前子进程为ZOMBIE，然后wakeup父进程？
+>
+> 答：因为`p->lock`一直被子进程acquire着，直到调度器线程才能释放，而父进程也需要acquire这个锁，所以这里的**代码顺序不重要**，总得等子进程执行到调度器线程，父进程才能得到锁来free
+
+### 13.8 kill系统调用
+
+<img src="MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MRKwJwSQOULTxQNadvq%2F-MRNB7UFdsScSGJAmlGU%2Fimage-166374037286713.png" alt="img" style="zoom:67%;" />
+
+在XV6中kill比较温和，只是将`killed`设置成1，然后将SLEEPING变成RUNABLE（这里之后解释）
+
+一旦`killed`设置成1，下一次进入`usertrap`的时候，`killed`的进程就会suicide，调用`exit`
+
+<img src="MIT6.S081.assets/assets%2F-MHZoT2b_bcLghjAOPsJ%2F-MRKwJwSQOULTxQNadvq%2F-MRNDod-w1OvPTWwuj9m%2Fimage.png" alt="img" style="zoom:50%;" />
+
+所以kill系统调用并不是真正的立即停止进程的运行，它更像是这样：如果进程在用户空间，那么下一次它执行系统调用它就会退出，又或者目标进程正在执行用户代码，当时下一次定时器中断或者其他中断触发了，进程才会退出。所以从一个进程调用kill，到另一个进程真正退出，中间可能有很明显的延时。
+
+而对于SLEEPING的程序则会直接kill掉（如果不怎么做的话，那么比如一个在等待输入的SLEEPING进程，而用户一直不输入就不会触发中断就一直不被kill掉），所以上面我们会将SLEEPING的进程变成RUNABLE，来让调度器线程来重启进程
+
+我们以piperead为例：
+
+<img src="MIT6.S081.assets\image.png" alt="img" style="zoom:50%;" />
+
+一旦调度器重启这个进程，那么就会判断`if(pr->killed)`，然后`return -1`，return的地点就是`usertrap`函数里面的`syscall`，然后就会执行`if(p->killed) exit(-1);`
+
+另一种情况是SLEEPING的进程不能被kill之后立刻退出，例如，一个进程正在更新一个文件系统并创建一个文件的过程中，进程不适宜在这个时间点退出，因为我们想要完成文件系统的操作，之后进程才能退出，所以我们就直接执行完这个系统调用，然后检查`if(p->killed) exit(-1)`即可。
+
+在XV6中可以随意kill别的进程，但是在Linux上并不能，会有检查user id等
+
+init进程不应该退出，所以在`exit`函数最前面会检查`if (p == initproc) panic("init exiting")`。
+
