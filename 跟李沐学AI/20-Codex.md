@@ -22,3 +22,7 @@
 
 - Codex训练不efficient
 - prompt的使用方法，当docstring很长的时候代码水平会打折
+
+## 主要内容
+
+- 基于GPT，使用GitHub数据微调，然后设计了164个问题来test，另外自己做了一些标准答案来提高准确率
