@@ -23,7 +23,7 @@ Wish to receive more recommendations of excellent **Math** and **CS** courses!
 | **Name**  | **Content** | **Notes**      | **Labs**         |
 |------------------|-------------|----------------|-------------------|
 | [CryptoZombies](https://cryptozombies.io/) | Blockchain    | ×(In Progress)              | ×              |
-| 跟李沐学AI | AI | 8/53 | × |
+| 跟李沐学AI | AI | 38/42 | × |
 
 ## Thanks
 
