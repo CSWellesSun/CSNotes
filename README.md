@@ -23,7 +23,8 @@ Wish to receive more recommendations of excellent **Math** and **CS** courses!
 | **Name**  | **Content** | **Notes**      | **Labs**         |
 |------------------|-------------|----------------|-------------------|
 | [CryptoZombies](https://cryptozombies.io/) | Blockchain    | ×(In Progress)              | ×              |
-| 跟李沐学AI | AI | 42/42 | × |
+| [跟李沐学AI](https://www.bilibili.com/video/BV1H44y1t75x) | AI | 42/42 | × |
+| [线性代数的本质](https://www.bilibili.com/video/BV1Ys411k7yQ) | LinearAlgebra | 10/10 | × |
 
 ## Thanks
 
